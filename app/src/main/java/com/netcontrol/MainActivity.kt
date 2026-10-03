@@ -1,9 +1,13 @@
 package com.netcontrol
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -21,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,9 +38,10 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
-
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,12 +52,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NetControlApp() {
@@ -61,10 +61,14 @@ fun NetControlApp() {
     val coroutineScope = rememberCoroutineScope()
     val pagerState = rememberPagerState(pageCount = { 2 })
 
-    // Wake up Root on Launch
+    // Wake up Root on Launch (Fixed Syntax)
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.Dispatchers.IO.invoke {
-            Runtime.getRuntime().exec("su -c id") // Wakes up Magisk/KernelSU prompt
+        withContext(Dispatchers.IO) {
+            try {
+                Runtime.getRuntime().exec("su -c id")
+            } catch (e: Exception) {
+                // Ignore if root isn't granted yet
+            }
         }
     }
 
@@ -135,7 +139,6 @@ fun NetworkBandsScreen(context: android.content.Context, triggerHaptic: (Int) ->
     var lockedBandId by remember { mutableStateOf<String?>(null) }
     var hasPermissions by remember { mutableStateOf(false) }
 
-    // Permission Launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -145,7 +148,6 @@ fun NetworkBandsScreen(context: android.content.Context, triggerHaptic: (Int) ->
         }
     }
 
-    // Check permissions on screen load
     LaunchedEffect(Unit) {
         val locGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val phoneGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
@@ -169,7 +171,7 @@ fun NetworkBandsScreen(context: android.content.Context, triggerHaptic: (Int) ->
 
         if (!hasPermissions) {
             item {
-                Text("Location and Phone permissions are required to scan cell towers.", color = MaterialTheme.colorScheme.error)
+                Text("Location and Phone permissions are required to scan cell towers. Please grant them in settings.", color = MaterialTheme.colorScheme.error)
             }
         }
 
@@ -186,9 +188,6 @@ fun NetworkBandsScreen(context: android.content.Context, triggerHaptic: (Int) ->
         }
     }
 }
-
-
-
 
 @Composable
 fun ActiveCarrierBanner(carrierName: String) {
@@ -217,7 +216,7 @@ fun ActiveCarrierBanner(carrierName: String) {
 fun BandCard(band: CellBandInfo, isLocked: Boolean, onLockClick: () -> Unit) {
     val isDark = isSystemInDarkTheme()
     val accessible = band.isCurrentCarrier
-    val cardAlpha = if (accessible) 1f else 0.35f // Grayed-out dull aesthetic for inaccessible foreign towers
+    val cardAlpha = if (accessible) 1f else 0.35f 
 
     val borderColor by animateColorAsState(
         targetValue = if (isLocked) MaterialTheme.colorScheme.primary else (if (isDark) Color(0xFF28282D) else Color(0xFFE5E5EA)),
