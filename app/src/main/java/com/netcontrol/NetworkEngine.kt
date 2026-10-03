@@ -5,6 +5,7 @@ import android.app.ActivityManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -12,7 +13,9 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.telephony.*
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class CellBandInfo(
@@ -63,7 +66,6 @@ object NetworkEngine {
         val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
         
-        // Extract SIM MCC/MNC to identify foreign carrier towers
         val activeSim = try { sm.activeSubscriptionInfoList?.firstOrNull() } catch(e:Exception){ null }
         val simMccMnc = if (activeSim != null) "${activeSim.mccString}${activeSim.mncString}" else ""
         val carrierName = activeSim?.carrierName?.toString() ?: "Your SIM"
@@ -105,7 +107,6 @@ object NetworkEngine {
         return bandList.distinctBy { it.bandName }.sortedByDescending { it.isConnected }
     }
 
-    // Fallback Engine: Monitors for "No Service"
     @SuppressLint("MissingPermission")
     fun startFallbackMonitor(context: Context) {
         if (isFallbackListenerActive) return
@@ -163,4 +164,12 @@ object NetworkEngine {
     private fun calcBars(dbm: Int): Int = when { dbm >= -85 -> 4; dbm >= -98 -> 3; dbm >= -110 -> 2; dbm >= -120 -> 1; else -> 0 }
     private fun resolve5gBand(arfcn: Int): String = when(arfcn) { in 620000..653333 -> "n78"; in 151600..160600 -> "n28"; in 499200..537999 -> "n41"; else -> "NR-$arfcn" }
     private fun resolve4gBand(arfcn: Int): String = when(arfcn) { in 38650..39649 -> "Band 40"; in 1200..1949 -> "Band 3"; in 0..599 -> "Band 1"; in 2400..2649 -> "Band 5"; else -> "LTE-$arfcn" }
+}
+
+class FallbackReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        CoroutineScope(Dispatchers.IO).launch {
+            NetworkEngine.lockBand("Band 40")
+        }
+    }
 }
