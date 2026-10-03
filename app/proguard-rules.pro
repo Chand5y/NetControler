@@ -1,0 +1,5 @@
+-keep class androidx.compose.** { *; }
+-keep class androidx.core.** { *; }
+-keep class androidx.lifecycle.** { *; }
+-keep class androidx.activity.** { *; }
+-dontwarn androidx.**
