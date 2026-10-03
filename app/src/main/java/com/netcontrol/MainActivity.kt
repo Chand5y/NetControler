@@ -46,6 +46,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NetControlApp() {
@@ -55,13 +61,18 @@ fun NetControlApp() {
     val coroutineScope = rememberCoroutineScope()
     val pagerState = rememberPagerState(pageCount = { 2 })
 
-    // Haptic feedback trigger
+    // Wake up Root on Launch
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.Dispatchers.IO.invoke {
+            Runtime.getRuntime().exec("su -c id") // Wakes up Magisk/KernelSU prompt
+        }
+    }
+
     val triggerHaptic: (Int) -> Unit = { feedbackType ->
         view.isHapticFeedbackEnabled = true
         view.performHapticFeedback(feedbackType)
     }
 
-    // Dynamic background: Soft pastel gradient for light mode, deep OLED black for dark mode
     val backgroundBrush = if (isDark) {
         Brush.verticalGradient(listOf(Color(0xFF0C0C0E), Color(0xFF000000)))
     } else {
@@ -71,34 +82,18 @@ fun NetControlApp() {
     Box(modifier = Modifier.fillMaxSize().background(backgroundBrush)) {
         Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
             
-            // Header Bar
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text(
-                        text = "NetControler",
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = if (isDark) Color.White else Color(0xFF1F1F1F)
-                    )
-                    Text(
-                        text = "HyperOS Radio Subsystem",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("NetControler", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = if (isDark) Color.White else Color(0xFF1F1F1F))
+                    Text("HyperOS Radio Subsystem", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Icon(
-                    imageVector = Icons.Rounded.CellTower,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(30.dp)
-                )
+                Icon(Icons.Rounded.CellTower, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(30.dp))
             }
 
-            // Tab Selector with Haptics and Smooth Transitions
             TabRow(
                 selectedTabIndex = pagerState.currentPage,
                 containerColor = Color.Transparent,
@@ -106,36 +101,24 @@ fun NetControlApp() {
                 indicator = { tabPositions ->
                     TabRowDefaults.SecondaryIndicator(
                         Modifier.tabIndicatorOffset(tabPositions[pagerState.currentPage]),
-                        height = 3.dp,
-                        color = MaterialTheme.colorScheme.primary
+                        height = 3.dp, color = MaterialTheme.colorScheme.primary
                     )
                 },
                 modifier = Modifier.padding(horizontal = 16.dp)
             ) {
-                val tabTitles = listOf("Network Bands", "Hardware Specs")
-                tabTitles.forEachIndexed { index, title ->
+                listOf("Network Bands", "Hardware Specs").forEachIndexed { index, title ->
                     Tab(
                         selected = pagerState.currentPage == index,
                         onClick = {
                             triggerHaptic(HapticFeedbackConstants.CLOCK_TICK)
                             coroutineScope.launch { pagerState.animateScrollToPage(index) }
                         },
-                        text = {
-                            Text(
-                                text = title,
-                                fontWeight = if (pagerState.currentPage == index) FontWeight.Bold else FontWeight.Normal,
-                                fontSize = 15.sp
-                            )
-                        }
+                        text = { Text(title, fontWeight = if (pagerState.currentPage == index) FontWeight.Bold else FontWeight.Normal, fontSize = 15.sp) }
                     )
                 }
             }
 
-            // Smooth Horizontal Animated Pager
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier.weight(1f)
-            ) { page ->
+            HorizontalPager(state = pagerState, modifier = Modifier.weight(1f)) { page ->
                 when (page) {
                     0 -> NetworkBandsScreen(context, triggerHaptic)
                     1 -> HardwareInfoScreen(context, triggerHaptic)
@@ -148,13 +131,30 @@ fun NetControlApp() {
 @Composable
 fun NetworkBandsScreen(context: android.content.Context, triggerHaptic: (Int) -> Unit) {
     val coroutineScope = rememberCoroutineScope()
-    var bands by remember { mutableStateOf(NetworkEngine.scanAvailableBands(context)) }
+    var bands by remember { mutableStateOf<List<CellBandInfo>>(emptyList()) }
     var lockedBandId by remember { mutableStateOf<String?>(null) }
+    var hasPermissions by remember { mutableStateOf(false) }
 
-    // Fallback detection simulation if cell count drops to zero
-    LaunchedEffect(bands) {
-        if (lockedBandId != null && bands.none { it.id == lockedBandId }) {
-            NetworkEngine.showFallbackNotification(context, "Band 40 (Fast)")
+    // Permission Launcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        hasPermissions = permissions.values.all { it }
+        if (hasPermissions) {
+            bands = NetworkEngine.scanAvailableBands(context)
+        }
+    }
+
+    // Check permissions on screen load
+    LaunchedEffect(Unit) {
+        val locGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val phoneGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        
+        if (!locGranted || !phoneGranted) {
+            permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.READ_PHONE_STATE))
+        } else {
+            hasPermissions = true
+            bands = NetworkEngine.scanAvailableBands(context)
         }
     }
 
@@ -167,6 +167,12 @@ fun NetworkBandsScreen(context: android.content.Context, triggerHaptic: (Int) ->
             ActiveCarrierBanner(bands.firstOrNull { it.isConnected }?.operatorName ?: "SIM 1 Network")
         }
 
+        if (!hasPermissions) {
+            item {
+                Text("Location and Phone permissions are required to scan cell towers.", color = MaterialTheme.colorScheme.error)
+            }
+        }
+
         items(bands, key = { it.id }) { band ->
             BandCard(
                 band = band,
@@ -174,14 +180,15 @@ fun NetworkBandsScreen(context: android.content.Context, triggerHaptic: (Int) ->
                 onLockClick = {
                     triggerHaptic(HapticFeedbackConstants.CONFIRM)
                     lockedBandId = if (lockedBandId == band.id) null else band.id
-                    coroutineScope.launch {
-                        NetworkEngine.lockBand(band.bandName)
-                    }
+                    coroutineScope.launch { NetworkEngine.lockBand(band.bandName) }
                 }
             )
         }
     }
 }
+
+
+
 
 @Composable
 fun ActiveCarrierBanner(carrierName: String) {
