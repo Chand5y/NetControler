@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import kotlinx.coroutines.launch
+
 
 enum class SpeedTier(val label: String, val colorHex: Long) {
     ULTRA_FAST("Ultra Fast • mmWave", 0xFF00E676),
