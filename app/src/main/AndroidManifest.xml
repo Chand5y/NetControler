@@ -23,17 +23,18 @@
             </intent-filter>
         </activity>
 
-        <!-- Quick Settings Tile for 4G/5G Switching -->
+         <!-- Quick Settings Tile for 4G/5G Switching -->
         <service
             android:name=".NetworkTileService"
             android:label="4G/5G Switch"
-            android:icon="@android:drawable/stat_sys_data_fully_connected_4g"
+            android:icon="@android:drawable/ic_dialog_info"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+        
 
         <!-- Fallback Action Receiver -->
         <receiver
