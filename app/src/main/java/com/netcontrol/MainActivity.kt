@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -64,7 +65,6 @@ fun NetControlApp() {
         hasPermissions = perms.values.all { it }
         if (hasPermissions) { 
             activeNetwork = NetworkEngine.getActiveConnectionName(context) 
-            NetworkEngine.startFallbackMonitor(context)
         }
     }
 
@@ -76,7 +76,6 @@ fun NetControlApp() {
         } else {
             hasPermissions = true
             activeNetwork = NetworkEngine.getActiveConnectionName(context)
-            NetworkEngine.startFallbackMonitor(context)
         }
     }
 
@@ -134,15 +133,33 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                     Text("Modem Features", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Text("Carrier Aggregation (CA)")
-                        Switch(checked = caEnabled, onCheckedChange = { caEnabled = it; triggerHaptic(); coroutineScope.launch { NetworkEngine.setProp("persist.radio.lte_ca_enabled", if(it) "1" else "0") } })
+                        Switch(checked = caEnabled, onCheckedChange = { 
+                            caEnabled = it; triggerHaptic()
+                            coroutineScope.launch { 
+                                val log = NetworkEngine.setProp("persist.radio.lte_ca_enabled", if(it) "1" else "0")
+                                withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
+                            } 
+                        })
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Text("VoLTE Override")
-                        Switch(checked = volteEnabled, onCheckedChange = { volteEnabled = it; triggerHaptic(); coroutineScope.launch { NetworkEngine.setProp("persist.dbg.volte_avail_ovr", if(it) "1" else "0") } })
+                        Switch(checked = volteEnabled, onCheckedChange = { 
+                            volteEnabled = it; triggerHaptic()
+                            coroutineScope.launch { 
+                                val log = NetworkEngine.setProp("persist.dbg.volte_avail_ovr", if(it) "1" else "0")
+                                withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
+                            } 
+                        })
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Text("VoNR (5G Calling)")
-                        Switch(checked = vonrEnabled, onCheckedChange = { vonrEnabled = it; triggerHaptic(); coroutineScope.launch { NetworkEngine.setProp("persist.radio.vonr_enabled", if(it) "true" else "false") } })
+                        Switch(checked = vonrEnabled, onCheckedChange = { 
+                            vonrEnabled = it; triggerHaptic()
+                            coroutineScope.launch { 
+                                val log = NetworkEngine.setProp("persist.radio.vonr_enabled", if(it) "true" else "false")
+                                withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
+                            } 
+                        })
                     }
                 }
             }
@@ -170,11 +187,16 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                                     triggerHaptic()
                                     if (lockedBandId == band.id) {
                                         lockedBandId = null
-                                        coroutineScope.launch { NetworkEngine.unlockBands() }
+                                        coroutineScope.launch { 
+                                            val log = NetworkEngine.unlockBands() 
+                                            withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
+                                        }
                                     } else {
                                         lockedBandId = band.id
-                                        // The FIX: passing generation (4G/5G) to force modem mode
-                                        coroutineScope.launch { NetworkEngine.lockBand(band.bandName, band.generation) }
+                                        coroutineScope.launch { 
+                                            val log = NetworkEngine.lockBand(band.bandName, band.generation) 
+                                            withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
+                                        }
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = if (lockedBandId == band.id) Color(0xFF00C853) else MaterialTheme.colorScheme.primary)
