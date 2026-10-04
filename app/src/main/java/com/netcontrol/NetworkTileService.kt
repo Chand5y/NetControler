@@ -18,9 +18,9 @@ class NetworkTileService : TileService() {
         CoroutineScope(Dispatchers.IO).launch {
             val currentMask = getActiveBitmask()
             currentState = when {
-                currentMask.contains("524288") -> 1 // 5G
-                currentMask.contains("8192") && !currentMask.contains("524288") -> 2 // 4G
-                else -> 0 // Auto
+                currentMask.contains("524288") && !currentMask.contains("4096") -> 1 // 5G Only
+                currentMask.contains("4096") && !currentMask.contains("524288") -> 2 // 4G Only
+                else -> 0 // Auto Mode
             }
             updateTile()
         }
@@ -66,9 +66,18 @@ class NetworkTileService : TileService() {
 
     private fun getActiveBitmask(): String {
         return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cmd phone get-allowed-network-types-for-users -s 0"))
-            val reader = BufferedReader(InputStreamReader(p.inputStream))
-            reader.readLine()?.trim() ?: ""
+            // First check the default subscription
+            var p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cmd phone get-allowed-network-types-for-users"))
+            var output = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim() ?: ""
+            
+            // If empty, try polling standard subIds until we hit the active SIM
+            var subId = 1
+            while (output.isEmpty() && subId <= 10) {
+                p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cmd phone get-allowed-network-types-for-users -s $subId"))
+                output = BufferedReader(InputStreamReader(p.inputStream)).readLine()?.trim() ?: ""
+                subId++
+            }
+            output
         } catch (e: Exception) { "" }
     }
 }
