@@ -25,8 +25,6 @@ import androidx.compose.material.icons.rounded.List
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -72,7 +70,7 @@ fun NetControlApp() {
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
         hasPermissions = perms.values.all { it }
         if (hasPermissions) { 
-            NetworkEngine.logEvent("PERMISSION", "Permissions granted.")
+            NetworkEngine.startFallbackMonitor(context)
             activeNetwork = NetworkEngine.getActiveConnectionName(context) 
         }
     }
@@ -84,6 +82,7 @@ fun NetControlApp() {
             permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.READ_PHONE_STATE))
         } else {
             hasPermissions = true
+            NetworkEngine.startFallbackMonitor(context)
             activeNetwork = NetworkEngine.getActiveConnectionName(context)
         }
     }
@@ -99,7 +98,7 @@ fun NetControlApp() {
             containerColor = Color.Transparent,
             indicator = { tabPositions -> TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[pagerState.currentPage]), color = MaterialTheme.colorScheme.primary) }
         ) {
-            listOf("Bands", "Hardware", "Logs").forEachIndexed { index, title ->
+            listOf("Telemetry", "Hardware", "Logs").forEachIndexed { index, title ->
                 Tab(
                     selected = pagerState.currentPage == index,
                     onClick = {
@@ -127,7 +126,6 @@ fun DiagnosticLogScreen(context: Context) {
     val logs by NetworkEngine.appLogs.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 
-    // File saver launcher
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         if (uri != null) {
             coroutineScope.launch(Dispatchers.IO) {
@@ -166,10 +164,10 @@ fun DiagnosticLogScreen(context: Context) {
                 LazyColumn(modifier = Modifier.padding(12.dp), reverseLayout = true) {
                     items(logs) { logMsg ->
                         val color = when {
-                            logMsg.contains("[ERROR") || logMsg.contains("[ROOT_ERR") || logMsg.contains("[API_ERR") -> Color(0xFFFF5252)
+                            logMsg.contains("[ERROR") || logMsg.contains("[ROOT_ERR") || logMsg.contains("[CRASH") -> Color(0xFFFF5252)
                             logMsg.contains("[SUCCESS") || logMsg.contains("[ROOT_OUT") -> Color(0xFF69F0AE)
                             logMsg.contains("[UI_ACTION") || logMsg.contains("[API_MODE") -> Color(0xFF40C4FF)
-                            logMsg.contains("[SCANNER") -> Color(0xFFFFD740)
+                            logMsg.contains("[TELEMETRY") || logMsg.contains("[WATCHDOG") -> Color(0xFFFFD740)
                             else -> Color.White
                         }
                         Text(text = logMsg, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(bottom = 6.dp))
@@ -185,7 +183,6 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
     val coroutineScope = rememberCoroutineScope()
     val view = LocalView.current
     var bands by remember { mutableStateOf<List<CellBandInfo>>(emptyList()) }
-    var lockedBandId by remember { mutableStateOf<String?>(null) }
     
     var caEnabled by remember { mutableStateOf(true) }
     var volteEnabled by remember { mutableStateOf(true) }
@@ -198,10 +195,25 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
     }
 
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxSize()) {
+        
+        // 1-Tap Launcher
+        item {
+            Button(
+                onClick = { 
+                    triggerHaptic()
+                    coroutineScope.launch { NetworkEngine.openNativeBandLocker(context) }
+                },
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("Open Native Band Locker (Radio Info)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
         item {
             Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Modem Features", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                    Text("IMS & Modem Overrides", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Text("Carrier Aggregation (CA)")
                         Switch(checked = caEnabled, onCheckedChange = { 
@@ -229,10 +241,9 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
 
         item { 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Available Scanned Bands", fontWeight = FontWeight.Bold)
+                Text("Live Cell Telemetry", fontWeight = FontWeight.Bold)
                 Button(onClick = { 
                     triggerHaptic()
-                    NetworkEngine.logEvent("UI", "Manual refresh requested.")
                     bands = NetworkEngine.scanAvailableBands(context) 
                 }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
                     Text("Refresh", fontSize = 12.sp)
@@ -245,37 +256,23 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
         } else {
             items(bands) { band ->
                 Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().alpha(if (band.isAccessible) 1f else 0.4f)) {
-                    Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column {
+                    Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("${band.generation} • ${band.bandName}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                            Text("${band.operatorName} | ${band.speedTier}", fontSize = 13.sp, color = Color.Gray)
-                            Text("Signal: ${band.signalDbm} dBm | Bars: ${band.bars}/4", fontSize = 13.sp)
                             if (band.isConnected) {
-                                Text("Active Connection", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Text("Active Anchor", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        if (band.isAccessible) {
-                            Button(
-                                onClick = { 
-                                    triggerHaptic()
-                                    if (lockedBandId == band.id) {
-                                        lockedBandId = null
-                                        coroutineScope.launch { 
-                                            NetworkEngine.unlockBands(context) 
-                                            withContext(Dispatchers.Main) { Toast.makeText(context, "Unlocking...", Toast.LENGTH_SHORT).show() }
-                                        }
-                                    } else {
-                                        lockedBandId = band.id
-                                        coroutineScope.launch { 
-                                            NetworkEngine.lockBand(context, band.bandName, band.generation) 
-                                            withContext(Dispatchers.Main) { Toast.makeText(context, "Locking...", Toast.LENGTH_SHORT).show() }
-                                        }
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (lockedBandId == band.id) Color(0xFF00C853) else MaterialTheme.colorScheme.primary)
-                            ) { 
-                                Text(if (lockedBandId == band.id) "Unlock" else "Lock") 
-                            }
+                        Text("${band.operatorName} | ${band.speedTier}", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(bottom = 6.dp))
+                        
+                        // Advanced NSG Metrics
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("RSRP (Pwr): ${band.signalDbm} dBm", fontSize = 12.sp)
+                            Text("SINR (Noise): ${band.sinr} dB", fontSize = 12.sp)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.padding(top = 2.dp)) {
+                            Text("RSRQ (Qual): ${band.rsrq} dB", fontSize = 12.sp)
+                            Text("PCI (Cell ID): ${band.pci}", fontSize = 12.sp, color = Color.Gray)
                         }
                     }
                 }
@@ -311,33 +308,6 @@ fun HardwareInfoScreen(context: android.content.Context) {
                     Column {
                         Text("Modem Baseband", fontSize = 12.sp, color = Color.Gray)
                         Text(report.modemFirmware, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Modem Supported Bands", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(bottom = 12.dp))
-                    
-                    Text("5G NR Channels", fontSize = 13.sp, color = Color(0xFF00C853), fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        report.supported5gBands.forEach { band ->
-                            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                                Text(band, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp), fontSize = 13.sp)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("4G LTE Channels", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        report.supported4gBands.forEach { band ->
-                            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                                Text(band, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp), fontSize = 13.sp)
-                            }
-                        }
                     }
                 }
             }
