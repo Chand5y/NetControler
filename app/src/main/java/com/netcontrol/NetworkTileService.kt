@@ -16,12 +16,14 @@ class NetworkTileService : TileService() {
     override fun onStartListening() {
         super.onStartListening()
         CoroutineScope(Dispatchers.IO).launch {
+            NetworkEngine.logEvent("QUICK_TILE", "Tile initialized, reading current DB mode...")
             val currentMode = getActiveModeFromDatabase()
             currentState = when (currentMode) {
-                "33" -> 1 // 5G Only
-                "11" -> 2 // 4G Only
-                else -> 0 // Auto Mode
+                "33" -> 1 
+                "11" -> 2 
+                else -> 0 
             }
+            NetworkEngine.logEvent("QUICK_TILE", "Tile state set to Index: $currentState based on DB mode: $currentMode")
             updateTile()
         }
     }
@@ -35,6 +37,8 @@ class NetworkTileService : TileService() {
             2 -> "LTE_ONLY"
             else -> "AUTO"
         }
+        
+        NetworkEngine.logEvent("QUICK_TILE", "User clicked tile. Requesting target mode: $targetMode")
         
         CoroutineScope(Dispatchers.IO).launch {
             NetworkEngine.applyNetworkMode(targetMode)
