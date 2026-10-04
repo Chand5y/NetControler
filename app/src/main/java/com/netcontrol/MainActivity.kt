@@ -173,7 +173,8 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                                         coroutineScope.launch { NetworkEngine.unlockBands() }
                                     } else {
                                         lockedBandId = band.id
-                                        coroutineScope.launch { NetworkEngine.lockBand(band.bandName) }
+                                        // The FIX: passing generation (4G/5G) to force modem mode
+                                        coroutineScope.launch { NetworkEngine.lockBand(band.bandName, band.generation) }
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = if (lockedBandId == band.id) Color(0xFF00C853) else MaterialTheme.colorScheme.primary)
