@@ -5,35 +5,70 @@ import android.service.quicksettings.TileService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 class NetworkTileService : TileService() {
-    private var is5GActive = true
+    
+    // 0 = Auto, 1 = 5G (NR Only), 2 = 4G (LTE Only)
+    private var currentState = 0 
 
     override fun onStartListening() {
         super.onStartListening()
-        updateTileState()
+        CoroutineScope(Dispatchers.IO).launch {
+            val currentMode = getPreferredNetworkMode()
+            currentState = when (currentMode) {
+                "33" -> 1 // NR Only
+                "11" -> 2 // LTE Only
+                else -> 0 // Auto (26 or other)
+            }
+            updateTile()
+        }
     }
 
     override fun onClick() {
         super.onClick()
-        is5GActive = !is5GActive
+        currentState = (currentState + 1) % 3
+        
+        val targetMode = when (currentState) {
+            1 -> "33" // NR Only
+            2 -> "11" // LTE Only
+            else -> "26" // Auto (NR/LTE/CDMA/EvDo/GSM/WCDMA)
+        }
         
         CoroutineScope(Dispatchers.IO).launch {
-            val mode = if (is5GActive) "26" else "9"
-            NetworkEngine.executeRoot("settings put global preferred_network_mode $mode")
-            NetworkEngine.executeRoot("settings put global preferred_network_mode1 $mode")
-            NetworkEngine.executeRoot("settings put global preferred_network_mode2 $mode")
-            NetworkEngine.executeRoot("cmd phone radio power false")
-            Thread.sleep(1500)
-            NetworkEngine.executeRoot("cmd phone radio power true")
+            NetworkEngine.applyNetworkMode(targetMode)
+            updateTile()
         }
-        updateTileState()
     }
 
-    private fun updateTileState() {
+    private fun updateTile() {
         val tile = qsTile ?: return
-        tile.state = if (is5GActive) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-        tile.label = if (is5GActive) "5G Mode" else "4G Mode"
+        when (currentState) {
+            1 -> {
+                tile.label = "5G Only"
+                tile.subtitle = "NR Only"
+                tile.state = Tile.STATE_ACTIVE
+            }
+            2 -> {
+                tile.label = "4G Only"
+                tile.subtitle = "LTE Only"
+                tile.state = Tile.STATE_ACTIVE
+            }
+            else -> {
+                tile.label = "Auto Mode"
+                tile.subtitle = "Default"
+                tile.state = Tile.STATE_INACTIVE
+            }
+        }
         tile.updateTile()
+    }
+
+    private fun getPreferredNetworkMode(): String {
+        return try {
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "settings get global preferred_network_mode"))
+            val reader = BufferedReader(InputStreamReader(p.inputStream))
+            reader.readLine()?.trim() ?: "26"
+        } catch (e: Exception) { "26" }
     }
 }
