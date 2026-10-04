@@ -18,17 +18,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,18 +53,23 @@ fun NetControlApp() {
     val context = LocalContext.current
     val view = LocalView.current
     val coroutineScope = rememberCoroutineScope()
-    val pagerState = rememberPagerState(pageCount = { 2 })
+    // Changed to 3 pages for the Logs tab
+    val pagerState = rememberPagerState(pageCount = { 3 })
     
     var activeNetwork by remember { mutableStateOf("Scanning...") }
     var hasPermissions by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) { try { Runtime.getRuntime().exec("su -c id") } catch (e: Exception) {} }
+        withContext(Dispatchers.IO) { 
+            NetworkEngine.logEvent("APP_START", "Requesting root access...")
+            try { Runtime.getRuntime().exec("su -c id") } catch (e: Exception) {} 
+        }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
         hasPermissions = perms.values.all { it }
         if (hasPermissions) { 
+            NetworkEngine.logEvent("PERMISSION", "Permissions granted via popup.")
             activeNetwork = NetworkEngine.getActiveConnectionName(context) 
         }
     }
@@ -72,9 +78,11 @@ fun NetControlApp() {
         val locGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val phoneGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
         if (!locGranted || !phoneGranted) {
+            NetworkEngine.logEvent("PERMISSION", "Missing permissions, launching request.")
             permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.READ_PHONE_STATE))
         } else {
             hasPermissions = true
+            NetworkEngine.logEvent("PERMISSION", "Permissions already granted.")
             activeNetwork = NetworkEngine.getActiveConnectionName(context)
         }
     }
@@ -90,7 +98,7 @@ fun NetControlApp() {
             containerColor = Color.Transparent,
             indicator = { tabPositions -> TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[pagerState.currentPage]), color = MaterialTheme.colorScheme.primary) }
         ) {
-            listOf("Network Bands", "Hardware Specs").forEachIndexed { index, title ->
+            listOf("Bands", "Hardware", "Logs").forEachIndexed { index, title ->
                 Tab(
                     selected = pagerState.currentPage == index,
                     onClick = {
@@ -104,7 +112,56 @@ fun NetControlApp() {
         }
 
         HorizontalPager(state = pagerState, modifier = Modifier.weight(1f)) { page ->
-            if (page == 0) { NetworkBandsScreen(context, hasPermissions) } else { HardwareInfoScreen(context) }
+            when (page) {
+                0 -> NetworkBandsScreen(context, hasPermissions)
+                1 -> HardwareInfoScreen(context)
+                2 -> DiagnosticLogScreen()
+            }
+        }
+    }
+}
+
+@Composable
+fun DiagnosticLogScreen() {
+    val logs by NetworkEngine.appLogs.collectAsState()
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("System & Root Console", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            IconButton(onClick = { NetworkEngine.clearLogs() }) {
+                Icon(Icons.Rounded.Delete, contentDescription = "Clear Logs", tint = Color.Gray)
+            }
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFF1E1E1E) // Terminal Black
+        ) {
+            if (logs.isEmpty()) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Text("No logs yet...", color = Color.Gray)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.padding(12.dp), reverseLayout = true) {
+                    items(logs) { logMsg ->
+                        val color = when {
+                            logMsg.contains("[ERROR") || logMsg.contains("[ROOT_ERR") || logMsg.contains("[CRASH") -> Color(0xFFFF5252)
+                            logMsg.contains("[SUCCESS") || logMsg.contains("[ROOT_OUT") -> Color(0xFF69F0AE)
+                            logMsg.contains("[UI_ACTION") || logMsg.contains("[QUICK_TILE") -> Color(0xFF40C4FF)
+                            logMsg.contains("[SCANNER") -> Color(0xFFFFD740)
+                            else -> Color.White
+                        }
+                        Text(
+                            text = logMsg,
+                            color = color,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -123,7 +180,10 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
     val triggerHaptic = { view.isHapticFeedbackEnabled = true; view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }
 
     LaunchedEffect(hasPermissions) {
-        if (hasPermissions) { bands = NetworkEngine.scanAvailableBands(context) }
+        if (hasPermissions) { 
+            NetworkEngine.logEvent("UI", "Triggering band scan...")
+            bands = NetworkEngine.scanAvailableBands(context) 
+        }
     }
 
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxSize()) {
@@ -135,37 +195,39 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                         Text("Carrier Aggregation (CA)")
                         Switch(checked = caEnabled, onCheckedChange = { 
                             caEnabled = it; triggerHaptic()
-                            coroutineScope.launch { 
-                                val log = NetworkEngine.setProp("persist.radio.lte_ca_enabled", if(it) "1" else "0")
-                                withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
-                            } 
+                            coroutineScope.launch { NetworkEngine.setProp("persist.radio.lte_ca_enabled", if(it) "1" else "0") } 
                         })
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Text("VoLTE Override")
                         Switch(checked = volteEnabled, onCheckedChange = { 
                             volteEnabled = it; triggerHaptic()
-                            coroutineScope.launch { 
-                                val log = NetworkEngine.setProp("persist.dbg.volte_avail_ovr", if(it) "1" else "0")
-                                withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
-                            } 
+                            coroutineScope.launch { NetworkEngine.setProp("persist.dbg.volte_avail_ovr", if(it) "1" else "0") } 
                         })
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Text("VoNR (5G Calling)")
                         Switch(checked = vonrEnabled, onCheckedChange = { 
                             vonrEnabled = it; triggerHaptic()
-                            coroutineScope.launch { 
-                                val log = NetworkEngine.setProp("persist.radio.vonr_enabled", if(it) "true" else "false")
-                                withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
-                            } 
+                            coroutineScope.launch { NetworkEngine.setProp("persist.radio.vonr_enabled", if(it) "true" else "false") } 
                         })
                     }
                 }
             }
         }
 
-        item { Text("Available Scanned Bands", fontWeight = FontWeight.Bold) }
+        item { 
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Available Scanned Bands", fontWeight = FontWeight.Bold)
+                Button(onClick = { 
+                    triggerHaptic()
+                    NetworkEngine.logEvent("UI", "Manual refresh requested.")
+                    bands = NetworkEngine.scanAvailableBands(context) 
+                }, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
+                    Text("Refresh", fontSize = 12.sp)
+                }
+            }
+        }
 
         if (!hasPermissions) {
             item { Text("Permissions required to scan towers.", color = MaterialTheme.colorScheme.error) }
@@ -189,13 +251,13 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                                         lockedBandId = null
                                         coroutineScope.launch { 
                                             val log = NetworkEngine.unlockBands() 
-                                            withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
+                                            withContext(Dispatchers.Main) { Toast.makeText(context, "Unlocking...", Toast.LENGTH_SHORT).show() }
                                         }
                                     } else {
                                         lockedBandId = band.id
                                         coroutineScope.launch { 
                                             val log = NetworkEngine.lockBand(band.bandName, band.generation) 
-                                            withContext(Dispatchers.Main) { Toast.makeText(context, log, Toast.LENGTH_LONG).show() }
+                                            withContext(Dispatchers.Main) { Toast.makeText(context, "Locking...", Toast.LENGTH_SHORT).show() }
                                         }
                                     }
                                 },
