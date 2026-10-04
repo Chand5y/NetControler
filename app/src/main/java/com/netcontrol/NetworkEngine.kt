@@ -44,9 +44,17 @@ object NetworkEngine {
 
     suspend fun setProp(prop: String, value: String) = executeRoot("setprop $prop $value")
     
-    suspend fun lockBand(bandName: String) = withContext(Dispatchers.IO) {
+    // THE FIX: Forcing Network Generations instead of hallucinated RF commands
+    suspend fun lockBand(bandName: String, generation: String) = withContext(Dispatchers.IO) {
         currentLockedBand = bandName
-        executeRoot("cmd phone set-carrier-restriction --allowed-bands $bandName")
+        
+        // Mode 33 = 5G NR Only. Mode 11 = 4G LTE Only.
+        val mode = if (generation == "5G") "33" else "11"
+        
+        executeRoot("settings put global preferred_network_mode $mode")
+        executeRoot("settings put global preferred_network_mode1 $mode")
+        executeRoot("settings put global preferred_network_mode2 $mode")
+        
         executeRoot("cmd phone radio power false")
         Thread.sleep(1500)
         executeRoot("cmd phone radio power true")
@@ -54,8 +62,12 @@ object NetworkEngine {
 
     suspend fun unlockBands() = withContext(Dispatchers.IO) {
         currentLockedBand = null
-        // Restores a wide-open list of standard Indian 4G/5G bands to clear the lock
-        executeRoot("cmd phone set-carrier-restriction --allowed-bands 1,3,5,8,40,41,n28,n77,n78")
+        
+        // Mode 26 = 5G/4G/3G Auto (Default HyperOS state)
+        executeRoot("settings put global preferred_network_mode 26")
+        executeRoot("settings put global preferred_network_mode1 26")
+        executeRoot("settings put global preferred_network_mode2 26")
+        
         executeRoot("cmd phone radio power false")
         Thread.sleep(1500)
         executeRoot("cmd phone radio power true")
@@ -147,7 +159,7 @@ object NetworkEngine {
         val notif = NotificationCompat.Builder(context, "net_fallback")
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle("Forced Signal Lost")
-            .setContentText("Tap to drop lock and connect to secondary stable band.")
+            .setContentText("Tap to drop lock and restore Auto mode.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true).build()
