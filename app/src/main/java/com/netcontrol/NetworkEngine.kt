@@ -35,11 +35,6 @@ object NetworkEngine {
     private var isFallbackListenerActive = false
     var currentLockedBand: String? = null
 
-    // Exact HyperOS/Snapdragon Bitmasks
-    private const val MASK_NR_ONLY = "524288" // (1 << 19)
-    private const val MASK_LTE_ONLY = "8192"  // (1 << 13)
-    private const val MASK_AUTO = "850943"    // Default Auto Mask
-
     suspend fun executeRoot(command: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
@@ -49,15 +44,35 @@ object NetworkEngine {
 
     suspend fun setProp(prop: String, value: String) = executeRoot("setprop $prop $value")
     
-    // Direct Baseband Command (Immediate effect, no airplane mode required)
+    // Direct Baseband Command (Immediate effect, identically mimics the 4636 hidden menu)
     suspend fun applyNetworkMode(mode: String) = withContext(Dispatchers.IO) {
         val bitmask = when (mode) {
-            "NR_ONLY" -> MASK_NR_ONLY
-            "LTE_ONLY" -> MASK_LTE_ONLY
-            else -> MASK_AUTO
+            "NR_ONLY" -> "524288"     // Forces 5G Only
+            "LTE_ONLY" -> "266240"    // Forces 4G LTE Only
+            else -> "901119"          // Forces Default Auto 
         }
-        executeRoot("cmd phone set-allowed-network-types-for-users -s 0 $bitmask")
-        executeRoot("cmd phone set-allowed-network-types-for-users -s 1 $bitmask")
+        
+        val legacyMode = when (mode) {
+            "NR_ONLY" -> "33"
+            "LTE_ONLY" -> "11"
+            else -> "26"
+        }
+
+        // 1. Target the default active data subscription
+        executeRoot("cmd phone set-allowed-network-types-for-users $bitmask")
+        executeRoot("cmd phone set-preferred-network-type $legacyMode")
+        
+        // 2. Brute-force loop through common Subscription IDs (1 to 10) 
+        // to guarantee it hits the active SIM on dual-SIM setups like the POCO F4
+        for (i in 1..10) {
+            executeRoot("cmd phone set-allowed-network-types-for-users -s $i $bitmask")
+            executeRoot("cmd phone set-preferred-network-type -s $i $legacyMode")
+        }
+        
+        // 3. Fallback: Update global database
+        executeRoot("settings put global preferred_network_mode $legacyMode")
+        executeRoot("settings put global preferred_network_mode1 $legacyMode")
+        executeRoot("settings put global preferred_network_mode2 $legacyMode")
     }
 
     suspend fun lockBand(bandName: String, generation: String) {
