@@ -1,6 +1,9 @@
 package com.netcontrol
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
@@ -20,9 +23,12 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -53,7 +59,6 @@ fun NetControlApp() {
     val context = LocalContext.current
     val view = LocalView.current
     val coroutineScope = rememberCoroutineScope()
-    // Changed to 3 pages for the Logs tab
     val pagerState = rememberPagerState(pageCount = { 3 })
     
     var activeNetwork by remember { mutableStateOf("Scanning...") }
@@ -69,7 +74,7 @@ fun NetControlApp() {
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
         hasPermissions = perms.values.all { it }
         if (hasPermissions) { 
-            NetworkEngine.logEvent("PERMISSION", "Permissions granted via popup.")
+            NetworkEngine.logEvent("PERMISSION", "Permissions granted.")
             activeNetwork = NetworkEngine.getActiveConnectionName(context) 
         }
     }
@@ -78,11 +83,9 @@ fun NetControlApp() {
         val locGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val phoneGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
         if (!locGranted || !phoneGranted) {
-            NetworkEngine.logEvent("PERMISSION", "Missing permissions, launching request.")
             permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.READ_PHONE_STATE))
         } else {
             hasPermissions = true
-            NetworkEngine.logEvent("PERMISSION", "Permissions already granted.")
             activeNetwork = NetworkEngine.getActiveConnectionName(context)
         }
     }
@@ -115,29 +118,35 @@ fun NetControlApp() {
             when (page) {
                 0 -> NetworkBandsScreen(context, hasPermissions)
                 1 -> HardwareInfoScreen(context)
-                2 -> DiagnosticLogScreen()
+                2 -> DiagnosticLogScreen(context)
             }
         }
     }
 }
 
 @Composable
-fun DiagnosticLogScreen() {
+fun DiagnosticLogScreen(context: Context) {
     val logs by NetworkEngine.appLogs.collectAsState()
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Row(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("System & Root Console", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            IconButton(onClick = { NetworkEngine.clearLogs() }) {
-                Icon(Icons.Rounded.Delete, contentDescription = "Clear Logs", tint = Color.Gray)
+            Row {
+                IconButton(onClick = { 
+                    val logString = logs.joinToString("\n")
+                    clipboard.setPrimaryClip(ClipData.newPlainText("NetControl Logs", logString))
+                    Toast.makeText(context, "Logs Copied to Clipboard", Toast.LENGTH_SHORT).show()
+                }) {
+                    Icon(Icons.Rounded.Share, contentDescription = "Copy Logs", tint = MaterialTheme.colorScheme.primary)
+                }
+                IconButton(onClick = { NetworkEngine.clearLogs() }) {
+                    Icon(Icons.Rounded.Delete, contentDescription = "Clear Logs", tint = Color.Gray)
+                }
             }
         }
 
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFF1E1E1E) // Terminal Black
-        ) {
+        Surface(modifier = Modifier.fillMaxSize(), shape = RoundedCornerShape(12.dp), color = Color(0xFF1E1E1E)) {
             if (logs.isEmpty()) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     Text("No logs yet...", color = Color.Gray)
@@ -146,19 +155,13 @@ fun DiagnosticLogScreen() {
                 LazyColumn(modifier = Modifier.padding(12.dp), reverseLayout = true) {
                     items(logs) { logMsg ->
                         val color = when {
-                            logMsg.contains("[ERROR") || logMsg.contains("[ROOT_ERR") || logMsg.contains("[CRASH") -> Color(0xFFFF5252)
+                            logMsg.contains("[ERROR") || logMsg.contains("[ROOT_ERR") || logMsg.contains("[API_ERR") -> Color(0xFFFF5252)
                             logMsg.contains("[SUCCESS") || logMsg.contains("[ROOT_OUT") -> Color(0xFF69F0AE)
-                            logMsg.contains("[UI_ACTION") || logMsg.contains("[QUICK_TILE") -> Color(0xFF40C4FF)
+                            logMsg.contains("[UI_ACTION") || logMsg.contains("[API_MODE") -> Color(0xFF40C4FF)
                             logMsg.contains("[SCANNER") -> Color(0xFFFFD740)
                             else -> Color.White
                         }
-                        Text(
-                            text = logMsg,
-                            color = color,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.padding(bottom = 6.dp)
-                        )
+                        Text(text = logMsg, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(bottom = 6.dp))
                     }
                 }
             }
@@ -180,10 +183,7 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
     val triggerHaptic = { view.isHapticFeedbackEnabled = true; view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }
 
     LaunchedEffect(hasPermissions) {
-        if (hasPermissions) { 
-            NetworkEngine.logEvent("UI", "Triggering band scan...")
-            bands = NetworkEngine.scanAvailableBands(context) 
-        }
+        if (hasPermissions) { bands = NetworkEngine.scanAvailableBands(context) }
     }
 
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxSize()) {
@@ -250,13 +250,13 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                                     if (lockedBandId == band.id) {
                                         lockedBandId = null
                                         coroutineScope.launch { 
-                                            val log = NetworkEngine.unlockBands() 
+                                            val log = NetworkEngine.unlockBands(context) 
                                             withContext(Dispatchers.Main) { Toast.makeText(context, "Unlocking...", Toast.LENGTH_SHORT).show() }
                                         }
                                     } else {
                                         lockedBandId = band.id
                                         coroutineScope.launch { 
-                                            val log = NetworkEngine.lockBand(band.bandName, band.generation) 
+                                            val log = NetworkEngine.lockBand(context, band.bandName, band.generation) 
                                             withContext(Dispatchers.Main) { Toast.makeText(context, "Locking...", Toast.LENGTH_SHORT).show() }
                                         }
                                     }
@@ -300,33 +300,6 @@ fun HardwareInfoScreen(context: android.content.Context) {
                     Column {
                         Text("Modem Baseband", fontSize = 12.sp, color = Color.Gray)
                         Text(report.modemFirmware, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Modem Supported Bands", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(bottom = 12.dp))
-                    
-                    Text("5G NR Channels", fontSize = 13.sp, color = Color(0xFF00C853), fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        report.supported5gBands.forEach { band ->
-                            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                                Text(band, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp), fontSize = 13.sp)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("4G LTE Channels", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        report.supported4gBands.forEach { band ->
-                            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                                Text(band, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp), fontSize = 13.sp)
-                            }
-                        }
                     }
                 }
             }
