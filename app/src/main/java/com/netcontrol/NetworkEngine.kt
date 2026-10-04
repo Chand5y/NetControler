@@ -7,11 +7,9 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.telephony.*
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.DataOutputStream
@@ -22,8 +20,10 @@ import java.util.Locale
 
 data class CellBandInfo(
     val id: String, val generation: String, val bandName: String,
-    val speedTier: String, val signalDbm: String, val bars: Int,
-    val operatorName: String, val isConnected: Boolean, val isAccessible: Boolean
+    val speedTier: String, val signalDbm: String, 
+    val rsrq: String, val sinr: String, val pci: String,
+    val bars: Int, val operatorName: String, 
+    val isConnected: Boolean, val isAccessible: Boolean
 )
 
 data class HardwareReport(
@@ -34,7 +34,6 @@ data class HardwareReport(
 )
 
 object NetworkEngine {
-    var currentLockedBand: String? = null
     private var isFallbackListenerActive = false
 
     private val _appLogs = MutableStateFlow<List<String>>(emptyList())
@@ -65,17 +64,13 @@ object NetworkEngine {
             
             val output = reader.readText().trim()
             val error = errorReader.readText().trim()
-            
             process.waitFor()
             
             if (error.isNotEmpty()) {
                 logEvent("ROOT_ERR", error)
                 "ERROR: $error"
-            } else if (output.isNotEmpty()) {
-                logEvent("ROOT_OUT", output)
-                "SUCCESS: $output"
             } else {
-                logEvent("ROOT_OUT", "[No Output / Success]")
+                logEvent("ROOT_OUT", if (output.isNotEmpty()) output else "[Success]")
                 "OK"
             }
         } catch (e: Exception) {
@@ -88,83 +83,11 @@ object NetworkEngine {
         logEvent("MODEM_FEATURE", "Setting $prop to $value")
         return executeRootWithLog("setprop $prop $value")
     }
-    
-    // The fixed engine: Applies the bitmask seamlessly without destroying the session via radio restarts
-    suspend fun applyNetworkMode(context: Context, mode: String): String = withContext(Dispatchers.IO) {
-        logEvent("API_MODE", "Applying Network Mode: $mode")
-        
-        val bitmask = when (mode) {
-            "NR_ONLY" -> "524288"
-            "LTE_ONLY" -> "8192"
-            else -> "850943"
-        }
-        val legacyMode = when (mode) {
-            "NR_ONLY" -> "33"
-            "LTE_ONLY" -> "11"
-            else -> "26"
-        }
 
-        // 1. Update Global Databases
-        executeRootWithLog("settings put global preferred_network_mode $legacyMode")
-        executeRootWithLog("settings put global preferred_network_mode1 $legacyMode")
-        executeRootWithLog("settings put global preferred_network_mode2 $legacyMode")
-        
-        // 2. Update Persist Properties for Xiaomi RIL
-        executeRootWithLog("setprop persist.radio.preferred_network_mode $legacyMode")
-        executeRootWithLog("setprop persist.vendor.radio.preferred_network_mode $legacyMode")
-
-        // 3. Send the Live Bitmask update via cmd phone
-        executeRootWithLog("cmd phone set-allowed-network-types-for-users $bitmask")
-        executeRootWithLog("cmd phone set-allowed-network-types-for-users -s 0 $bitmask")
-        executeRootWithLog("cmd phone set-allowed-network-types-for-users -s 1 $bitmask")
-        executeRootWithLog("cmd phone set-allowed-network-types-for-users -s 2 $bitmask")
-        
-        "Command sent. Watchdog monitoring handoff..."
-    }
-
-    suspend fun lockBand(context: Context, bandName: String, generation: String): String {
-        logEvent("UI_ACTION", "Lock Button Clicked for $bandName ($generation)")
-        currentLockedBand = bandName
-        val mode = if (generation == "5G") "NR_ONLY" else "LTE_ONLY"
-        
-        val result = applyNetworkMode(context, mode)
-
-        // The 30-Second Polling Watchdog
-        CoroutineScope(Dispatchers.IO).launch {
-            logEvent("WATCHDOG", "Monitoring modem handoff to $generation for 30 seconds...")
-            var success = false
-            
-            for (i in 1..6) {
-                Thread.sleep(5000) // Poll every 5 seconds
-                val currentBands = scanAvailableBands(context)
-                val active = currentBands.firstOrNull { it.isConnected }
-                
-                if (active != null) {
-                    if ((generation == "5G" && active.generation == "5G") || 
-                        (generation == "4G" && active.generation == "4G")) {
-                        logEvent("WATCHDOG", "✅ Lock Verified: Modem successfully anchored to ${active.generation} ${active.bandName}")
-                        success = true
-                        break
-                    } else {
-                        logEvent("WATCHDOG", "⏳ Modem currently on ${active.generation} ${active.bandName}, waiting for handoff...")
-                    }
-                } else {
-                    logEvent("WATCHDOG", "⚠️ Modem is Out of Service (Searching for tower...)")
-                }
-            }
-            
-            if (!success) {
-                logEvent("WATCHDOG", "❌ Lock Failed: Modem refused to anchor to $generation within 30 seconds. Carrier/Tower rejected the forced band.")
-            }
-        }
-
-        return result
-    }
-
-    suspend fun unlockBands(context: Context): String {
-        logEvent("UI_ACTION", "Unlock Button Clicked")
-        currentLockedBand = null
-        return applyNetworkMode(context, "AUTO")
+    // THE SAFE FIX: 1-Tap Launcher for Native Android Radio Info
+    suspend fun openNativeBandLocker(context: Context) = withContext(Dispatchers.IO) {
+        logEvent("UI_ACTION", "Launching native RadioInfo menu via Root Intent.")
+        executeRootWithLog("am start -n com.android.phone/.settings.RadioInfo")
     }
 
     @SuppressLint("MissingPermission")
@@ -174,9 +97,7 @@ object NetworkEngine {
             val net = cm.activeNetwork
             val caps = cm.getNetworkCapabilities(net)
             
-            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
-                return "Wi-Fi Network"
-            }
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) return "Wi-Fi Network"
             
             val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
             sm.activeSubscriptionInfoList?.firstOrNull()?.carrierName?.toString() ?: "Cellular Data"
@@ -195,7 +116,7 @@ object NetworkEngine {
         val bandList = mutableListOf<CellBandInfo>()
         val cells = try { tm.allCellInfo } catch (e: Exception) { null } ?: emptyList()
 
-        var connectedBandLog = "No active cellular band detected. (Modem searching or out of service)"
+        var connectedBandLog = "No active cellular band detected."
 
         for (cell in cells) {
             try {
@@ -204,34 +125,54 @@ object NetworkEngine {
                     is CellInfoNr -> {
                         val id = cell.cellIdentity as? CellIdentityNr
                         val dbmRaw = (cell.cellSignalStrength as? CellSignalStrengthNr)?.dbm ?: CellInfo.UNAVAILABLE
-                        val dbm = if (dbmRaw == CellInfo.UNAVAILABLE || dbmRaw > 0) "N/A" else dbmRaw.toString()
+                        val rsrqRaw = (cell.cellSignalStrength as? CellSignalStrengthNr)?.csiRsrq ?: CellInfo.UNAVAILABLE
+                        val sinrRaw = (cell.cellSignalStrength as? CellSignalStrengthNr)?.csiSinr ?: CellInfo.UNAVAILABLE
+                        val pciRaw = id?.pci ?: CellInfo.UNAVAILABLE
+
                         val band = resolve5gBand(id?.nrarfcn ?: 0)
                         val speed = if (band == "n78" || band.contains("258")) "Ultra Fast / High Band" else "Stable / Wide Coverage"
                         
                         val cellMccMnc = "${id?.mccString}${id?.mncString}"
                         val match = isReg || simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull" || cellMccMnc.startsWith(simMccMnc.take(5))
                         
-                        if (isReg) connectedBandLog = "Connected to 5G $band | Signal: $dbm dBm"
-                        bandList.add(CellBandInfo("5G-${id?.nrarfcn}", "5G", band, speed, dbm, calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match))
+                        if (isReg) connectedBandLog = "Connected to 5G $band | PCI: $pciRaw | SINR: $sinrRaw"
+                        bandList.add(CellBandInfo(
+                            "5G-${id?.nrarfcn}", "5G", band, speed, 
+                            if (dbmRaw != CellInfo.UNAVAILABLE) "$dbmRaw" else "N/A",
+                            if (rsrqRaw != CellInfo.UNAVAILABLE) "$rsrqRaw" else "N/A",
+                            if (sinrRaw != CellInfo.UNAVAILABLE) "$sinrRaw" else "N/A",
+                            if (pciRaw != CellInfo.UNAVAILABLE) "$pciRaw" else "N/A",
+                            calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match
+                        ))
                     }
                     is CellInfoLte -> {
                         val id = cell.cellIdentity as? CellIdentityLte
                         val dbmRaw = (cell.cellSignalStrength as? CellSignalStrengthLte)?.dbm ?: CellInfo.UNAVAILABLE
-                        val dbm = if (dbmRaw == CellInfo.UNAVAILABLE || dbmRaw > 0) "N/A" else dbmRaw.toString()
+                        val rsrqRaw = (cell.cellSignalStrength as? CellSignalStrengthLte)?.rsrq ?: CellInfo.UNAVAILABLE
+                        val sinrRaw = (cell.cellSignalStrength as? CellSignalStrengthLte)?.rssnr ?: CellInfo.UNAVAILABLE
+                        val pciRaw = id?.pci ?: CellInfo.UNAVAILABLE
+
                         val band = resolve4gBand(id?.earfcn ?: 0)
                         val speed = if (band == "Band 40" || band == "Band 3") "Balanced Mid-Band" else "Standard Coverage"
 
                         val cellMccMnc = "${id?.mccString}${id?.mncString}"
                         val match = isReg || simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull" || cellMccMnc.startsWith(simMccMnc.take(5))
 
-                        if (isReg) connectedBandLog = "Connected to 4G $band | Signal: $dbm dBm"
-                        bandList.add(CellBandInfo("4G-${id?.earfcn}", "4G", band, speed, dbm, calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match))
+                        if (isReg) connectedBandLog = "Connected to 4G $band | PCI: $pciRaw | SINR: $sinrRaw"
+                        bandList.add(CellBandInfo(
+                            "4G-${id?.earfcn}", "4G", band, speed, 
+                            if (dbmRaw != CellInfo.UNAVAILABLE) "$dbmRaw" else "N/A",
+                            if (rsrqRaw != CellInfo.UNAVAILABLE) "$rsrqRaw" else "N/A",
+                            if (sinrRaw != CellInfo.UNAVAILABLE) "$sinrRaw" else "N/A",
+                            if (pciRaw != CellInfo.UNAVAILABLE) "$pciRaw" else "N/A",
+                            calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match
+                        ))
                     }
                 }
             } catch (e: Exception) {}
         }
         
-        logEvent("SCANNER", connectedBandLog)
+        if (cells.isNotEmpty()) logEvent("TELEMETRY", connectedBandLog)
         return bandList.distinctBy { it.bandName }.sortedByDescending { it.isConnected }
     }
 
@@ -244,10 +185,9 @@ object NetworkEngine {
             tm.registerTelephonyCallback(context.mainExecutor, object : TelephonyCallback(), TelephonyCallback.ServiceStateListener {
                 override fun onServiceStateChanged(serviceState: ServiceState) {
                     when (serviceState.state) {
-                        ServiceState.STATE_OUT_OF_SERVICE -> logEvent("MODEM_STATE", "Dropped to OUT_OF_SERVICE (No signal found on locked band)")
-                        ServiceState.STATE_EMERGENCY_ONLY -> logEvent("MODEM_STATE", "Dropped to EMERGENCY_ONLY (Locked band rejected by tower)")
-                        ServiceState.STATE_POWER_OFF -> logEvent("MODEM_STATE", "Radio Antenna Powered OFF")
-                        ServiceState.STATE_IN_SERVICE -> logEvent("MODEM_STATE", "Modem IN_SERVICE (Connection Established)")
+                        ServiceState.STATE_OUT_OF_SERVICE -> logEvent("MODEM_WATCHDOG", "Modem dropped to OUT_OF_SERVICE (No signal).")
+                        ServiceState.STATE_EMERGENCY_ONLY -> logEvent("MODEM_WATCHDOG", "Modem dropped to EMERGENCY_ONLY (Tower rejected).")
+                        ServiceState.STATE_IN_SERVICE -> logEvent("MODEM_WATCHDOG", "Modem IN_SERVICE (Connection Established).")
                     }
                 }
             })
@@ -266,10 +206,8 @@ object NetworkEngine {
         val soc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}" else Build.HARDWARE
 
         return HardwareReport(
-            deviceName = Build.MODEL,
-            processor = if (soc.isNotBlank() && soc != "unknown") soc else "Snapdragon 870",
-            totalRamGb = totalRam, freeRamGb = freeRam,
-            modemFirmware = Build.getRadioVersion() ?: "Unknown",
+            deviceName = Build.MODEL, processor = if (soc.isNotBlank() && soc != "unknown") soc else "Snapdragon 870",
+            totalRamGb = totalRam, freeRamGb = freeRam, modemFirmware = Build.getRadioVersion() ?: "Unknown",
             supported5gBands = listOf("n1", "n3", "n5", "n7", "n8", "n20", "n28", "n38", "n40", "n41", "n77", "n78"),
             supported4gBands = listOf("B1", "B2", "B3", "B4", "B5", "B7", "B8", "B20", "B28", "B38", "B40", "B41")
         )
