@@ -86,38 +86,28 @@ object NetworkEngine {
         return executeRootWithLog("setprop $prop $value")
     }
     
-    // THE FIX: Abandoning shell commands and using Native Android APIs
+    // THE FIX: Impersonating UID 1001 (Radio) to bypass Android 13+ Security exceptions
     suspend fun applyNetworkMode(context: Context, mode: String): String = withContext(Dispatchers.IO) {
-        logEvent("API_MODE", "Attempting direct Java API switch to: $mode")
-        try {
-            // 1. Use Root to forcefully bypass Android security and grant our app System-Level Phone State permissions
-            executeRootWithLog("appops set com.netcontrol MODIFY_PHONE_STATE allow")
-            
-            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-            
-            // 2. Define the exact bitmasks using official Android SDK constants
-            val bitmask = when (mode) {
-                "NR_ONLY" -> TelephonyManager.NETWORK_TYPE_BITMASK_NR.toLong()
-                "LTE_ONLY" -> TelephonyManager.NETWORK_TYPE_BITMASK_LTE.toLong()
-                else -> (TelephonyManager.NETWORK_TYPE_BITMASK_NR or TelephonyManager.NETWORK_TYPE_BITMASK_LTE or TelephonyManager.NETWORK_TYPE_BITMASK_UMTS or TelephonyManager.NETWORK_TYPE_BITMASK_GSM).toLong()
-            }
-            
-            // 3. Inject the command directly into the active modem using the Java API
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                tm.setAllowedNetworkTypesForReason(TelephonyManager.ALLOWED_NETWORK_TYPES_REASON_USER, bitmask)
-                logEvent("API_MODE", "Successfully pushed bitmask $bitmask via Native Telephony API")
-                "SUCCESS: Native API commanded."
-            } else {
-                logEvent("API_ERR", "Android version too low for Native API.")
-                "ERROR: Unsupported OS Version"
-            }
-        } catch (e: SecurityException) {
-            logEvent("API_ERR", "SecurityException: HyperOS blocked AppOps bypass. ${e.message}")
-            "ERROR: Permission Denied"
-        } catch (e: Exception) {
-            logEvent("API_ERR", "Exception: ${e.message}")
-            "ERROR: ${e.message}"
+        logEvent("API_MODE", "Attempting Radio-UID bitmask switch to: $mode")
+        
+        val bitmask = when (mode) {
+            "NR_ONLY" -> "524288"
+            "LTE_ONLY" -> "8192"
+            else -> "850943"
         }
+        
+        // 1. By prefixing 'su 1001 -c', we execute the command as the internal Radio daemon instead of root.
+        // This stops the Telephony framework from rejecting our command with a SecurityException.
+        val log1 = executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users $bitmask\"")
+        val log2 = executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users -s 1 $bitmask\"")
+        val log3 = executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users -s 2 $bitmask\"")
+        
+        // 2. Restart the physical radio antenna to lock the new settings immediately
+        executeRootWithLog("su 1001 -c \"cmd phone radio power false\"")
+        Thread.sleep(1500)
+        executeRootWithLog("su 1001 -c \"cmd phone radio power true\"")
+        
+        return "Command completed. Review logs."
     }
 
     suspend fun lockBand(context: Context, bandName: String, generation: String): String {
