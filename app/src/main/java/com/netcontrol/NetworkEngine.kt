@@ -44,33 +44,27 @@ object NetworkEngine {
 
     suspend fun setProp(prop: String, value: String) = executeRoot("setprop $prop $value")
     
-    // THE FIX: Forcing Network Generations instead of hallucinated RF commands
-    suspend fun lockBand(bandName: String, generation: String) = withContext(Dispatchers.IO) {
-        currentLockedBand = bandName
-        
-        // Mode 33 = 5G NR Only. Mode 11 = 4G LTE Only.
-        val mode = if (generation == "5G") "33" else "11"
-        
+    // Core application of Native Phone Info settings
+    suspend fun applyNetworkMode(mode: String) = withContext(Dispatchers.IO) {
         executeRoot("settings put global preferred_network_mode $mode")
         executeRoot("settings put global preferred_network_mode1 $mode")
         executeRoot("settings put global preferred_network_mode2 $mode")
         
-        executeRoot("cmd phone radio power false")
-        Thread.sleep(1500)
-        executeRoot("cmd phone radio power true")
+        // Force the modem to drop active sessions and read the new database values
+        executeRoot("cmd connectivity airplane-mode enable")
+        Thread.sleep(1200)
+        executeRoot("cmd connectivity airplane-mode disable")
+    }
+    
+    suspend fun lockBand(bandName: String, generation: String) {
+        currentLockedBand = bandName
+        val mode = if (generation == "5G") "33" else "11"
+        applyNetworkMode(mode)
     }
 
-    suspend fun unlockBands() = withContext(Dispatchers.IO) {
+    suspend fun unlockBands() {
         currentLockedBand = null
-        
-        // Mode 26 = 5G/4G/3G Auto (Default HyperOS state)
-        executeRoot("settings put global preferred_network_mode 26")
-        executeRoot("settings put global preferred_network_mode1 26")
-        executeRoot("settings put global preferred_network_mode2 26")
-        
-        executeRoot("cmd phone radio power false")
-        Thread.sleep(1500)
-        executeRoot("cmd phone radio power true")
+        applyNetworkMode("26")
     }
 
     @SuppressLint("MissingPermission")
