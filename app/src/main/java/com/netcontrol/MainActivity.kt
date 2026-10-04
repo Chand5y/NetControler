@@ -1,8 +1,6 @@
 package com.netcontrol
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -23,7 +21,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.List
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
@@ -127,18 +125,31 @@ fun NetControlApp() {
 @Composable
 fun DiagnosticLogScreen(context: Context) {
     val logs by NetworkEngine.appLogs.collectAsState()
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val coroutineScope = rememberCoroutineScope()
+
+    // File saver launcher
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) {
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        val logString = NetworkEngine.appLogs.value.joinToString("\n")
+                        output.write(logString.toByteArray())
+                    }
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Logs saved successfully.", Toast.LENGTH_SHORT).show() }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Failed to save file.", Toast.LENGTH_SHORT).show() }
+                }
+            }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Row(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("System & Root Console", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Row {
-                IconButton(onClick = { 
-                    val logString = logs.joinToString("\n")
-                    clipboard.setPrimaryClip(ClipData.newPlainText("NetControl Logs", logString))
-                    Toast.makeText(context, "Logs Copied to Clipboard", Toast.LENGTH_SHORT).show()
-                }) {
-                    Icon(Icons.Rounded.Share, contentDescription = "Copy Logs", tint = MaterialTheme.colorScheme.primary)
+                IconButton(onClick = { exportLauncher.launch("NetControl_Logs.txt") }) {
+                    Icon(Icons.Rounded.List, contentDescription = "Save Logs as TXT", tint = MaterialTheme.colorScheme.primary)
                 }
                 IconButton(onClick = { NetworkEngine.clearLogs() }) {
                     Icon(Icons.Rounded.Delete, contentDescription = "Clear Logs", tint = Color.Gray)
@@ -250,13 +261,13 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                                     if (lockedBandId == band.id) {
                                         lockedBandId = null
                                         coroutineScope.launch { 
-                                            val log = NetworkEngine.unlockBands(context) 
+                                            NetworkEngine.unlockBands(context) 
                                             withContext(Dispatchers.Main) { Toast.makeText(context, "Unlocking...", Toast.LENGTH_SHORT).show() }
                                         }
                                     } else {
                                         lockedBandId = band.id
                                         coroutineScope.launch { 
-                                            val log = NetworkEngine.lockBand(context, band.bandName, band.generation) 
+                                            NetworkEngine.lockBand(context, band.bandName, band.generation) 
                                             withContext(Dispatchers.Main) { Toast.makeText(context, "Locking...", Toast.LENGTH_SHORT).show() }
                                         }
                                     }
@@ -300,6 +311,33 @@ fun HardwareInfoScreen(context: android.content.Context) {
                     Column {
                         Text("Modem Baseband", fontSize = 12.sp, color = Color.Gray)
                         Text(report.modemFirmware, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Modem Supported Bands", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(bottom = 12.dp))
+                    
+                    Text("5G NR Channels", fontSize = 13.sp, color = Color(0xFF00C853), fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        report.supported5gBands.forEach { band ->
+                            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                                Text(band, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp), fontSize = 13.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("4G LTE Channels", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        report.supported4gBands.forEach { band ->
+                            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                                Text(band, modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp), fontSize = 13.sp)
+                            }
+                        }
                     }
                 }
             }
