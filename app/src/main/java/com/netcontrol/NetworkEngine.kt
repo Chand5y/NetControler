@@ -7,9 +7,11 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.telephony.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.DataOutputStream
@@ -33,6 +35,7 @@ data class HardwareReport(
 
 object NetworkEngine {
     var currentLockedBand: String? = null
+    private var isFallbackListenerActive = false
 
     private val _appLogs = MutableStateFlow<List<String>>(emptyList())
     val appLogs = _appLogs.asStateFlow()
@@ -86,7 +89,6 @@ object NetworkEngine {
         return executeRootWithLog("setprop $prop $value")
     }
     
-    // THE FIX: Impersonating UID 1001 (Radio) to bypass Android 13+ Security exceptions
     suspend fun applyNetworkMode(context: Context, mode: String): String = withContext(Dispatchers.IO) {
         logEvent("API_MODE", "Attempting Radio-UID bitmask switch to: $mode")
         
@@ -96,25 +98,34 @@ object NetworkEngine {
             else -> "850943"
         }
         
-        // 1. By prefixing 'su 1001 -c', we execute the command as the internal Radio daemon instead of root.
-        // This stops the Telephony framework from rejecting our command with a SecurityException.
-        val log1 = executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users $bitmask\"")
-        val log2 = executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users -s 1 $bitmask\"")
-        val log3 = executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users -s 2 $bitmask\"")
+        executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users $bitmask\"")
+        executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users -s 1 $bitmask\"")
+        executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users -s 2 $bitmask\"")
         
-        // 2. Restart the physical radio antenna to lock the new settings immediately
         executeRootWithLog("su 1001 -c \"cmd phone radio power false\"")
         Thread.sleep(1500)
         executeRootWithLog("su 1001 -c \"cmd phone radio power true\"")
         
-        return "Command completed. Review logs."
+        // FIX: Removed the illegal 'return' keyword that broke compilation
+        "Command completed. Review logs."
     }
 
     suspend fun lockBand(context: Context, bandName: String, generation: String): String {
         logEvent("UI_ACTION", "Lock Button Clicked for $bandName ($generation)")
         currentLockedBand = bandName
         val mode = if (generation == "5G") "NR_ONLY" else "LTE_ONLY"
-        return applyNetworkMode(context, mode)
+        
+        val result = applyNetworkMode(context, mode)
+
+        // 30-Second Watchdog Timer
+        CoroutineScope(Dispatchers.IO).launch {
+            logEvent("WATCHDOG", "Started 30-second verification timer for $bandName...")
+            Thread.sleep(30000)
+            logEvent("WATCHDOG", "30 seconds elapsed. Auto-scanning to verify network state...")
+            scanAvailableBands(context)
+        }
+
+        return result
     }
 
     suspend fun unlockBands(context: Context): String {
@@ -151,7 +162,7 @@ object NetworkEngine {
         val bandList = mutableListOf<CellBandInfo>()
         val cells = try { tm.allCellInfo } catch (e: Exception) { null } ?: emptyList()
 
-        var connectedBandLog = "No active cellular band detected"
+        var connectedBandLog = "No active cellular band detected. (Modem searching or out of service)"
 
         for (cell in cells) {
             try {
@@ -187,8 +198,29 @@ object NetworkEngine {
             } catch (e: Exception) {}
         }
         
-        if (cells.isNotEmpty()) logEvent("SCANNER", connectedBandLog)
+        logEvent("SCANNER", connectedBandLog)
         return bandList.distinctBy { it.bandName }.sortedByDescending { it.isConnected }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startFallbackMonitor(context: Context) {
+        if (isFallbackListenerActive) return
+        val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            tm.registerTelephonyCallback(context.mainExecutor, object : TelephonyCallback(), TelephonyCallback.ServiceStateListener {
+                override fun onServiceStateChanged(serviceState: ServiceState) {
+                    when (serviceState.state) {
+                        ServiceState.STATE_OUT_OF_SERVICE -> logEvent("MODEM_STATE", "Dropped to OUT_OF_SERVICE (No signal found on locked band)")
+                        ServiceState.STATE_EMERGENCY_ONLY -> logEvent("MODEM_STATE", "Dropped to EMERGENCY_ONLY (Locked band rejected by tower)")
+                        ServiceState.STATE_POWER_OFF -> logEvent("MODEM_STATE", "Radio Antenna Powered OFF")
+                        ServiceState.STATE_IN_SERVICE -> logEvent("MODEM_STATE", "Modem IN_SERVICE (Connection Established)")
+                    }
+                }
+            })
+            isFallbackListenerActive = true
+            logEvent("SYSTEM", "Real-time Modem State Watchdog attached.")
+        }
     }
 
     fun getHardwareReport(context: Context): HardwareReport {
