@@ -5,27 +5,14 @@ import android.service.quicksettings.TileService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.io.BufferedReader
-import java.io.InputStreamReader
 
 class NetworkTileService : TileService() {
-    
-    // 0 = Auto, 1 = 5G (NR Only), 2 = 4G (LTE Only)
     private var currentState = 0 
 
     override fun onStartListening() {
         super.onStartListening()
-        CoroutineScope(Dispatchers.IO).launch {
-            NetworkEngine.logEvent("QUICK_TILE", "Tile initialized, reading current DB mode...")
-            val currentMode = getActiveModeFromDatabase()
-            currentState = when (currentMode) {
-                "33" -> 1 
-                "11" -> 2 
-                else -> 0 
-            }
-            NetworkEngine.logEvent("QUICK_TILE", "Tile state set to Index: $currentState based on DB mode: $currentMode")
-            updateTile()
-        }
+        // Tile starts at Auto by default as we no longer read the shell database
+        updateTile()
     }
 
     override fun onClick() {
@@ -41,7 +28,8 @@ class NetworkTileService : TileService() {
         NetworkEngine.logEvent("QUICK_TILE", "User clicked tile. Requesting target mode: $targetMode")
         
         CoroutineScope(Dispatchers.IO).launch {
-            NetworkEngine.applyNetworkMode(targetMode)
+            // Send the context so the Native API can execute
+            NetworkEngine.applyNetworkMode(applicationContext, targetMode)
             updateTile()
         }
     }
@@ -66,13 +54,5 @@ class NetworkTileService : TileService() {
             }
         }
         tile.updateTile()
-    }
-
-    private fun getActiveModeFromDatabase(): String {
-        return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "settings get global preferred_network_mode"))
-            val reader = BufferedReader(InputStreamReader(p.inputStream))
-            reader.readLine()?.trim() ?: "26"
-        } catch (e: Exception) { "26" }
     }
 }
