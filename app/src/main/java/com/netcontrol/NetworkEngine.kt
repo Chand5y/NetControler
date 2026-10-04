@@ -8,10 +8,15 @@ import android.net.NetworkCapabilities
 import android.os.Build
 import android.telephony.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.DataOutputStream
 import java.io.InputStreamReader
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class CellBandInfo(
     val id: String, val generation: String, val bandName: String,
@@ -29,7 +34,25 @@ data class HardwareReport(
 object NetworkEngine {
     var currentLockedBand: String? = null
 
+    // --- LOGGER SYSTEM ---
+    private val _appLogs = MutableStateFlow<List<String>>(emptyList())
+    val appLogs = _appLogs.asStateFlow()
+
+    fun logEvent(tag: String, message: String) {
+        val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        val logEntry = "[$time] [$tag] $message"
+        // Keep last 500 logs, insert at top
+        _appLogs.value = listOf(logEntry) + _appLogs.value.take(499)
+    }
+
+    fun clearLogs() {
+        _appLogs.value = emptyList()
+        logEvent("SYSTEM", "Logs cleared.")
+    }
+    // ---------------------
+
     suspend fun executeRootWithLog(command: String): String = withContext(Dispatchers.IO) {
+        logEvent("ROOT_CMD", "Executing: $command")
         try {
             val process = Runtime.getRuntime().exec("su")
             val os = DataOutputStream(process.outputStream)
@@ -46,53 +69,59 @@ object NetworkEngine {
             process.waitFor()
             
             if (error.isNotEmpty()) {
+                logEvent("ROOT_ERR", error)
                 "ERROR: $error"
             } else if (output.isNotEmpty()) {
+                logEvent("ROOT_OUT", output)
                 "SUCCESS: $output"
             } else {
+                logEvent("ROOT_OUT", "[No Output / Success]")
                 "OK"
             }
         } catch (e: Exception) {
+            logEvent("ROOT_CRASH", e.message ?: "Unknown crash")
             "CRASH: ${e.message}"
         }
     }
 
     suspend fun setProp(prop: String, value: String): String {
+        logEvent("MODEM_FEATURE", "Setting $prop to $value")
         return executeRootWithLog("setprop $prop $value")
     }
     
-    // The Brute-Force Network Switcher
     suspend fun applyNetworkMode(mode: String): String {
+        logEvent("NETWORK_MODE", "Attempting to apply mode: $mode")
         val legacyMode = when (mode) {
             "NR_ONLY" -> "33"
             "LTE_ONLY" -> "11"
             else -> "26"
         }
 
-        // 1. Update the Global Database (The absolute source of truth)
+        logEvent("NETWORK_MODE", "Updating Global Database to mode $legacyMode")
         executeRootWithLog("settings put global preferred_network_mode $legacyMode")
         executeRootWithLog("settings put global preferred_network_mode1 $legacyMode")
         executeRootWithLog("settings put global preferred_network_mode2 $legacyMode")
         
-        // 2. Send the Legacy Command to all possible SIM slots
-        val log1 = executeRootWithLog("cmd phone set-preferred-network-type $legacyMode")
-        val log2 = executeRootWithLog("cmd phone set-preferred-network-type 0 $legacyMode")
-        val log3 = executeRootWithLog("cmd phone set-preferred-network-type 1 $legacyMode")
+        logEvent("NETWORK_MODE", "Injecting legacy preferred-network-type ($legacyMode) to SIMs")
+        executeRootWithLog("cmd phone set-preferred-network-type $legacyMode")
+        executeRootWithLog("cmd phone set-preferred-network-type 0 $legacyMode")
+        executeRootWithLog("cmd phone set-preferred-network-type 1 $legacyMode")
         
-        // 3. THE HAMMER: Kill the Telephony Daemon. 
-        // This forces the phone to restart the cellular radio and read the database we just updated.
-        executeRootWithLog("pkill -f com.android.phone")
+        logEvent("NETWORK_MODE", "Killing Telephony Daemon to force reload...")
+        val killLog = executeRootWithLog("pkill -f com.android.phone")
         
-        return "Applied Mode $legacyMode. Logs: [$log1] [$log2] [$log3]"
+        return "Applied Mode $legacyMode. Kill Status: $killLog"
     }
 
     suspend fun lockBand(bandName: String, generation: String): String {
+        logEvent("UI_ACTION", "Lock Button Clicked for $bandName ($generation)")
         currentLockedBand = bandName
         val mode = if (generation == "5G") "NR_ONLY" else "LTE_ONLY"
         return applyNetworkMode(mode)
     }
 
     suspend fun unlockBands(): String {
+        logEvent("UI_ACTION", "Unlock Button Clicked")
         currentLockedBand = null
         return applyNetworkMode("AUTO")
     }
@@ -101,12 +130,22 @@ object NetworkEngine {
     fun getActiveConnectionName(context: Context): String {
         return try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            if (cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+            val net = cm.activeNetwork
+            val caps = cm.getNetworkCapabilities(net)
+            
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                logEvent("CONN_STATE", "Active Connection is Wi-Fi")
                 return "Wi-Fi Network"
             }
+            
             val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
-            sm.activeSubscriptionInfoList?.firstOrNull()?.carrierName?.toString() ?: "Cellular Data"
-        } catch (e: Exception) { "Unknown Network" }
+            val carrier = sm.activeSubscriptionInfoList?.firstOrNull()?.carrierName?.toString() ?: "Cellular Data"
+            logEvent("CONN_STATE", "Active Connection is Cellular: $carrier")
+            carrier
+        } catch (e: Exception) { 
+            logEvent("CONN_STATE_ERR", "Failed to read active connection")
+            "Unknown Network" 
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -120,6 +159,8 @@ object NetworkEngine {
 
         val bandList = mutableListOf<CellBandInfo>()
         val cells = try { tm.allCellInfo } catch (e: Exception) { null } ?: emptyList()
+
+        var connectedBandLog = "No active cellular band detected"
 
         for (cell in cells) {
             try {
@@ -135,6 +176,7 @@ object NetworkEngine {
                         val cellMccMnc = "${id?.mccString}${id?.mncString}"
                         val match = isReg || simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull" || cellMccMnc.startsWith(simMccMnc.take(5))
                         
+                        if (isReg) connectedBandLog = "Connected to 5G $band | Signal: $dbm dBm"
                         bandList.add(CellBandInfo("5G-${id?.nrarfcn}", "5G", band, speed, dbm, calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match))
                     }
                     is CellInfoLte -> {
@@ -147,15 +189,20 @@ object NetworkEngine {
                         val cellMccMnc = "${id?.mccString}${id?.mncString}"
                         val match = isReg || simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull" || cellMccMnc.startsWith(simMccMnc.take(5))
 
+                        if (isReg) connectedBandLog = "Connected to 4G $band | Signal: $dbm dBm"
                         bandList.add(CellBandInfo("4G-${id?.earfcn}", "4G", band, speed, dbm, calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match))
                     }
                 }
             } catch (e: Exception) {}
         }
+        
+        // Log the active connection during a scan
+        if (cells.isNotEmpty()) {
+            logEvent("SCANNER", connectedBandLog)
+        }
+        
         return bandList.distinctBy { it.bandName }.sortedByDescending { it.isConnected }
     }
-
-    fun startFallbackMonitor(context: Context) {} 
 
     fun getHardwareReport(context: Context): HardwareReport {
         val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
