@@ -44,9 +44,21 @@ object NetworkEngine {
 
     suspend fun setProp(prop: String, value: String) = executeRoot("setprop $prop $value")
     
-    suspend fun lockBand(bandName: String) {
+    suspend fun lockBand(bandName: String) = withContext(Dispatchers.IO) {
         currentLockedBand = bandName
         executeRoot("cmd phone set-carrier-restriction --allowed-bands $bandName")
+        executeRoot("cmd phone radio power false")
+        Thread.sleep(1500)
+        executeRoot("cmd phone radio power true")
+    }
+
+    suspend fun unlockBands() = withContext(Dispatchers.IO) {
+        currentLockedBand = null
+        // Restores a wide-open list of standard Indian 4G/5G bands to clear the lock
+        executeRoot("cmd phone set-carrier-restriction --allowed-bands 1,3,5,8,40,41,n28,n77,n78")
+        executeRoot("cmd phone radio power false")
+        Thread.sleep(1500)
+        executeRoot("cmd phone radio power true")
     }
 
     @SuppressLint("MissingPermission")
@@ -169,7 +181,7 @@ object NetworkEngine {
 class FallbackReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         CoroutineScope(Dispatchers.IO).launch {
-            NetworkEngine.lockBand("Band 40")
+            NetworkEngine.unlockBands()
         }
     }
 }
