@@ -34,14 +34,12 @@ data class HardwareReport(
 object NetworkEngine {
     var currentLockedBand: String? = null
 
-    // --- LOGGER SYSTEM ---
     private val _appLogs = MutableStateFlow<List<String>>(emptyList())
     val appLogs = _appLogs.asStateFlow()
 
     fun logEvent(tag: String, message: String) {
         val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
         val logEntry = "[$time] [$tag] $message"
-        // Keep last 500 logs, insert at top
         _appLogs.value = listOf(logEntry) + _appLogs.value.take(499)
     }
 
@@ -49,7 +47,6 @@ object NetworkEngine {
         _appLogs.value = emptyList()
         logEvent("SYSTEM", "Logs cleared.")
     }
-    // ---------------------
 
     suspend fun executeRootWithLog(command: String): String = withContext(Dispatchers.IO) {
         logEvent("ROOT_CMD", "Executing: $command")
@@ -89,41 +86,51 @@ object NetworkEngine {
         return executeRootWithLog("setprop $prop $value")
     }
     
-    suspend fun applyNetworkMode(mode: String): String {
-        logEvent("NETWORK_MODE", "Attempting to apply mode: $mode")
-        val legacyMode = when (mode) {
-            "NR_ONLY" -> "33"
-            "LTE_ONLY" -> "11"
-            else -> "26"
+    // THE FIX: Abandoning shell commands and using Native Android APIs
+    suspend fun applyNetworkMode(context: Context, mode: String): String = withContext(Dispatchers.IO) {
+        logEvent("API_MODE", "Attempting direct Java API switch to: $mode")
+        try {
+            // 1. Use Root to forcefully bypass Android security and grant our app System-Level Phone State permissions
+            executeRootWithLog("appops set com.netcontrol MODIFY_PHONE_STATE allow")
+            
+            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            
+            // 2. Define the exact bitmasks using official Android SDK constants
+            val bitmask = when (mode) {
+                "NR_ONLY" -> TelephonyManager.NETWORK_TYPE_BITMASK_NR.toLong()
+                "LTE_ONLY" -> TelephonyManager.NETWORK_TYPE_BITMASK_LTE.toLong()
+                else -> (TelephonyManager.NETWORK_TYPE_BITMASK_NR or TelephonyManager.NETWORK_TYPE_BITMASK_LTE or TelephonyManager.NETWORK_TYPE_BITMASK_UMTS or TelephonyManager.NETWORK_TYPE_BITMASK_GSM).toLong()
+            }
+            
+            // 3. Inject the command directly into the active modem using the Java API
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                tm.setAllowedNetworkTypesForReason(TelephonyManager.ALLOWED_NETWORK_TYPES_REASON_USER, bitmask)
+                logEvent("API_MODE", "Successfully pushed bitmask $bitmask via Native Telephony API")
+                "SUCCESS: Native API commanded."
+            } else {
+                logEvent("API_ERR", "Android version too low for Native API.")
+                "ERROR: Unsupported OS Version"
+            }
+        } catch (e: SecurityException) {
+            logEvent("API_ERR", "SecurityException: HyperOS blocked AppOps bypass. ${e.message}")
+            "ERROR: Permission Denied"
+        } catch (e: Exception) {
+            logEvent("API_ERR", "Exception: ${e.message}")
+            "ERROR: ${e.message}"
         }
-
-        logEvent("NETWORK_MODE", "Updating Global Database to mode $legacyMode")
-        executeRootWithLog("settings put global preferred_network_mode $legacyMode")
-        executeRootWithLog("settings put global preferred_network_mode1 $legacyMode")
-        executeRootWithLog("settings put global preferred_network_mode2 $legacyMode")
-        
-        logEvent("NETWORK_MODE", "Injecting legacy preferred-network-type ($legacyMode) to SIMs")
-        executeRootWithLog("cmd phone set-preferred-network-type $legacyMode")
-        executeRootWithLog("cmd phone set-preferred-network-type 0 $legacyMode")
-        executeRootWithLog("cmd phone set-preferred-network-type 1 $legacyMode")
-        
-        logEvent("NETWORK_MODE", "Killing Telephony Daemon to force reload...")
-        val killLog = executeRootWithLog("pkill -f com.android.phone")
-        
-        return "Applied Mode $legacyMode. Kill Status: $killLog"
     }
 
-    suspend fun lockBand(bandName: String, generation: String): String {
+    suspend fun lockBand(context: Context, bandName: String, generation: String): String {
         logEvent("UI_ACTION", "Lock Button Clicked for $bandName ($generation)")
         currentLockedBand = bandName
         val mode = if (generation == "5G") "NR_ONLY" else "LTE_ONLY"
-        return applyNetworkMode(mode)
+        return applyNetworkMode(context, mode)
     }
 
-    suspend fun unlockBands(): String {
+    suspend fun unlockBands(context: Context): String {
         logEvent("UI_ACTION", "Unlock Button Clicked")
         currentLockedBand = null
-        return applyNetworkMode("AUTO")
+        return applyNetworkMode(context, "AUTO")
     }
 
     @SuppressLint("MissingPermission")
@@ -134,18 +141,12 @@ object NetworkEngine {
             val caps = cm.getNetworkCapabilities(net)
             
             if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
-                logEvent("CONN_STATE", "Active Connection is Wi-Fi")
                 return "Wi-Fi Network"
             }
             
             val sm = context.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
-            val carrier = sm.activeSubscriptionInfoList?.firstOrNull()?.carrierName?.toString() ?: "Cellular Data"
-            logEvent("CONN_STATE", "Active Connection is Cellular: $carrier")
-            carrier
-        } catch (e: Exception) { 
-            logEvent("CONN_STATE_ERR", "Failed to read active connection")
-            "Unknown Network" 
-        }
+            sm.activeSubscriptionInfoList?.firstOrNull()?.carrierName?.toString() ?: "Cellular Data"
+        } catch (e: Exception) { "Unknown Network" }
     }
 
     @SuppressLint("MissingPermission")
@@ -196,11 +197,7 @@ object NetworkEngine {
             } catch (e: Exception) {}
         }
         
-        // Log the active connection during a scan
-        if (cells.isNotEmpty()) {
-            logEvent("SCANNER", connectedBandLog)
-        }
-        
+        if (cells.isNotEmpty()) logEvent("SCANNER", connectedBandLog)
         return bandList.distinctBy { it.bandName }.sortedByDescending { it.isConnected }
     }
 
