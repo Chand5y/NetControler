@@ -89,25 +89,37 @@ object NetworkEngine {
         return executeRootWithLog("setprop $prop $value")
     }
     
+    // The fixed engine: Applies the bitmask seamlessly without destroying the session via radio restarts
     suspend fun applyNetworkMode(context: Context, mode: String): String = withContext(Dispatchers.IO) {
-        logEvent("API_MODE", "Attempting Radio-UID bitmask switch to: $mode")
+        logEvent("API_MODE", "Applying Network Mode: $mode")
         
         val bitmask = when (mode) {
             "NR_ONLY" -> "524288"
             "LTE_ONLY" -> "8192"
             else -> "850943"
         }
+        val legacyMode = when (mode) {
+            "NR_ONLY" -> "33"
+            "LTE_ONLY" -> "11"
+            else -> "26"
+        }
+
+        // 1. Update Global Databases
+        executeRootWithLog("settings put global preferred_network_mode $legacyMode")
+        executeRootWithLog("settings put global preferred_network_mode1 $legacyMode")
+        executeRootWithLog("settings put global preferred_network_mode2 $legacyMode")
         
-        executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users $bitmask\"")
-        executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users -s 1 $bitmask\"")
-        executeRootWithLog("su 1001 -c \"cmd phone set-allowed-network-types-for-users -s 2 $bitmask\"")
+        // 2. Update Persist Properties for Xiaomi RIL
+        executeRootWithLog("setprop persist.radio.preferred_network_mode $legacyMode")
+        executeRootWithLog("setprop persist.vendor.radio.preferred_network_mode $legacyMode")
+
+        // 3. Send the Live Bitmask update via cmd phone
+        executeRootWithLog("cmd phone set-allowed-network-types-for-users $bitmask")
+        executeRootWithLog("cmd phone set-allowed-network-types-for-users -s 0 $bitmask")
+        executeRootWithLog("cmd phone set-allowed-network-types-for-users -s 1 $bitmask")
+        executeRootWithLog("cmd phone set-allowed-network-types-for-users -s 2 $bitmask")
         
-        executeRootWithLog("su 1001 -c \"cmd phone radio power false\"")
-        Thread.sleep(1500)
-        executeRootWithLog("su 1001 -c \"cmd phone radio power true\"")
-        
-        // FIX: Removed the illegal 'return' keyword that broke compilation
-        "Command completed. Review logs."
+        "Command sent. Watchdog monitoring handoff..."
     }
 
     suspend fun lockBand(context: Context, bandName: String, generation: String): String {
@@ -117,12 +129,33 @@ object NetworkEngine {
         
         val result = applyNetworkMode(context, mode)
 
-        // 30-Second Watchdog Timer
+        // The 30-Second Polling Watchdog
         CoroutineScope(Dispatchers.IO).launch {
-            logEvent("WATCHDOG", "Started 30-second verification timer for $bandName...")
-            Thread.sleep(30000)
-            logEvent("WATCHDOG", "30 seconds elapsed. Auto-scanning to verify network state...")
-            scanAvailableBands(context)
+            logEvent("WATCHDOG", "Monitoring modem handoff to $generation for 30 seconds...")
+            var success = false
+            
+            for (i in 1..6) {
+                Thread.sleep(5000) // Poll every 5 seconds
+                val currentBands = scanAvailableBands(context)
+                val active = currentBands.firstOrNull { it.isConnected }
+                
+                if (active != null) {
+                    if ((generation == "5G" && active.generation == "5G") || 
+                        (generation == "4G" && active.generation == "4G")) {
+                        logEvent("WATCHDOG", "✅ Lock Verified: Modem successfully anchored to ${active.generation} ${active.bandName}")
+                        success = true
+                        break
+                    } else {
+                        logEvent("WATCHDOG", "⏳ Modem currently on ${active.generation} ${active.bandName}, waiting for handoff...")
+                    }
+                } else {
+                    logEvent("WATCHDOG", "⚠️ Modem is Out of Service (Searching for tower...)")
+                }
+            }
+            
+            if (!success) {
+                logEvent("WATCHDOG", "❌ Lock Failed: Modem refused to anchor to $generation within 30 seconds. Carrier/Tower rejected the forced band.")
+            }
         }
 
         return result
