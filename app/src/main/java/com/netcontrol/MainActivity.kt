@@ -168,12 +168,17 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                             Button(
                                 onClick = { 
                                     triggerHaptic()
-                                    lockedBandId = band.id
-                                    coroutineScope.launch { NetworkEngine.lockBand(band.bandName) } 
+                                    if (lockedBandId == band.id) {
+                                        lockedBandId = null
+                                        coroutineScope.launch { NetworkEngine.unlockBands() }
+                                    } else {
+                                        lockedBandId = band.id
+                                        coroutineScope.launch { NetworkEngine.lockBand(band.bandName) }
+                                    }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = if (lockedBandId == band.id) Color(0xFF00C853) else MaterialTheme.colorScheme.primary)
                             ) { 
-                                Text(if (lockedBandId == band.id) "Locked" else "Lock") 
+                                Text(if (lockedBandId == band.id) "Unlock" else "Lock") 
                             }
                         }
                     }
