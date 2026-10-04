@@ -35,6 +35,11 @@ object NetworkEngine {
     private var isFallbackListenerActive = false
     var currentLockedBand: String? = null
 
+    // Exact HyperOS/Snapdragon Bitmasks
+    private const val MASK_NR_ONLY = "524288" // (1 << 19)
+    private const val MASK_LTE_ONLY = "8192"  // (1 << 13)
+    private const val MASK_AUTO = "850943"    // Default Auto Mask
+
     suspend fun executeRoot(command: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val p = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
@@ -44,27 +49,26 @@ object NetworkEngine {
 
     suspend fun setProp(prop: String, value: String) = executeRoot("setprop $prop $value")
     
-    // Core application of Native Phone Info settings
+    // Direct Baseband Command (Immediate effect, no airplane mode required)
     suspend fun applyNetworkMode(mode: String) = withContext(Dispatchers.IO) {
-        executeRoot("settings put global preferred_network_mode $mode")
-        executeRoot("settings put global preferred_network_mode1 $mode")
-        executeRoot("settings put global preferred_network_mode2 $mode")
-        
-        // Force the modem to drop active sessions and read the new database values
-        executeRoot("cmd connectivity airplane-mode enable")
-        Thread.sleep(1200)
-        executeRoot("cmd connectivity airplane-mode disable")
+        val bitmask = when (mode) {
+            "NR_ONLY" -> MASK_NR_ONLY
+            "LTE_ONLY" -> MASK_LTE_ONLY
+            else -> MASK_AUTO
+        }
+        executeRoot("cmd phone set-allowed-network-types-for-users -s 0 $bitmask")
+        executeRoot("cmd phone set-allowed-network-types-for-users -s 1 $bitmask")
     }
-    
+
     suspend fun lockBand(bandName: String, generation: String) {
         currentLockedBand = bandName
-        val mode = if (generation == "5G") "33" else "11"
+        val mode = if (generation == "5G") "NR_ONLY" else "LTE_ONLY"
         applyNetworkMode(mode)
     }
 
     suspend fun unlockBands() {
         currentLockedBand = null
-        applyNetworkMode("26")
+        applyNetworkMode("AUTO")
     }
 
     @SuppressLint("MissingPermission")
