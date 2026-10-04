@@ -16,11 +16,11 @@ class NetworkTileService : TileService() {
     override fun onStartListening() {
         super.onStartListening()
         CoroutineScope(Dispatchers.IO).launch {
-            val currentMode = getPreferredNetworkMode()
-            currentState = when (currentMode) {
-                "33" -> 1 // NR Only
-                "11" -> 2 // LTE Only
-                else -> 0 // Auto (26 or other)
+            val currentMask = getActiveBitmask()
+            currentState = when {
+                currentMask.contains("524288") -> 1 // 5G
+                currentMask.contains("8192") && !currentMask.contains("524288") -> 2 // 4G
+                else -> 0 // Auto
             }
             updateTile()
         }
@@ -31,9 +31,9 @@ class NetworkTileService : TileService() {
         currentState = (currentState + 1) % 3
         
         val targetMode = when (currentState) {
-            1 -> "33" // NR Only
-            2 -> "11" // LTE Only
-            else -> "26" // Auto (NR/LTE/CDMA/EvDo/GSM/WCDMA)
+            1 -> "NR_ONLY"
+            2 -> "LTE_ONLY"
+            else -> "AUTO"
         }
         
         CoroutineScope(Dispatchers.IO).launch {
@@ -64,11 +64,11 @@ class NetworkTileService : TileService() {
         tile.updateTile()
     }
 
-    private fun getPreferredNetworkMode(): String {
+    private fun getActiveBitmask(): String {
         return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "settings get global preferred_network_mode"))
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cmd phone get-allowed-network-types-for-users -s 0"))
             val reader = BufferedReader(InputStreamReader(p.inputStream))
-            reader.readLine()?.trim() ?: "26"
-        } catch (e: Exception) { "26" }
+            reader.readLine()?.trim() ?: ""
+        } catch (e: Exception) { "" }
     }
 }
