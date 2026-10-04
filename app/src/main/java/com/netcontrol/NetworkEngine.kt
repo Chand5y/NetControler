@@ -7,9 +7,11 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.telephony.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.DataOutputStream
@@ -34,6 +36,7 @@ data class HardwareReport(
 )
 
 object NetworkEngine {
+    var currentLockedBand: String? = null
     private var isFallbackListenerActive = false
 
     private val _appLogs = MutableStateFlow<List<String>>(emptyList())
@@ -84,10 +87,81 @@ object NetworkEngine {
         return executeRootWithLog("setprop $prop $value")
     }
 
-    // THE SAFE FIX: 1-Tap Launcher for Native Android Radio Info
     suspend fun openNativeBandLocker(context: Context) = withContext(Dispatchers.IO) {
         logEvent("UI_ACTION", "Launching native RadioInfo menu via Root Intent.")
         executeRootWithLog("am start -n com.android.phone/.settings.RadioInfo")
+    }
+
+    // Applies Network Mode in Background silently
+    suspend fun applyNetworkMode(context: Context, mode: String): String = withContext(Dispatchers.IO) {
+        logEvent("API_MODE", "Applying Network Mode: $mode")
+        
+        val bitmask = when (mode) {
+            "NR_ONLY" -> "524288"
+            "LTE_ONLY" -> "8192"
+            else -> "850943"
+        }
+        val legacyMode = when (mode) {
+            "NR_ONLY" -> "33"
+            "LTE_ONLY" -> "11"
+            else -> "26"
+        }
+
+        executeRootWithLog("settings put global preferred_network_mode $legacyMode")
+        executeRootWithLog("settings put global preferred_network_mode1 $legacyMode")
+        executeRootWithLog("settings put global preferred_network_mode2 $legacyMode")
+        
+        executeRootWithLog("setprop persist.radio.preferred_network_mode $legacyMode")
+        executeRootWithLog("setprop persist.vendor.radio.preferred_network_mode $legacyMode")
+
+        // Uses the exact syntax that executed successfully in your log 
+        executeRootWithLog("cmd phone set-allowed-network-types-for-users $bitmask")
+        executeRootWithLog("cmd phone set-preferred-network-type $legacyMode")
+        
+        "Command sent. Background execution applied."
+    }
+
+    suspend fun lockBand(context: Context, bandName: String, generation: String): String {
+        logEvent("UI_ACTION", "Lock Button Clicked for $bandName ($generation)")
+        currentLockedBand = bandName
+        val mode = if (generation == "5G") "NR_ONLY" else "LTE_ONLY"
+        
+        val result = applyNetworkMode(context, mode)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            logEvent("WATCHDOG", "Monitoring modem handoff to $generation for 30 seconds...")
+            var success = false
+            
+            for (i in 1..6) {
+                Thread.sleep(5000)
+                val currentBands = scanAvailableBands(context)
+                val active = currentBands.firstOrNull { it.isConnected }
+                
+                if (active != null) {
+                    if ((generation == "5G" && active.generation == "5G") || 
+                        (generation == "4G" && active.generation == "4G")) {
+                        logEvent("WATCHDOG", "✅ Lock Verified: Modem successfully anchored to ${active.generation} ${active.bandName}")
+                        success = true
+                        break
+                    } else {
+                        logEvent("WATCHDOG", "⏳ Modem currently on ${active.generation} ${active.bandName}, waiting for handoff...")
+                    }
+                } else {
+                    logEvent("WATCHDOG", "⚠️ Modem is Out of Service (Searching for tower...)")
+                }
+            }
+            
+            if (!success) {
+                logEvent("WATCHDOG", "❌ Lock Failed: Carrier/Tower rejected $generation. (e.g. Jio 5G NSA requires 4G anchor)")
+            }
+        }
+        return result
+    }
+
+    suspend fun unlockBands(context: Context): String {
+        logEvent("UI_ACTION", "Unlock Button Clicked")
+        currentLockedBand = null
+        return applyNetworkMode(context, "AUTO")
     }
 
     @SuppressLint("MissingPermission")
@@ -115,7 +189,6 @@ object NetworkEngine {
 
         val bandList = mutableListOf<CellBandInfo>()
         val cells = try { tm.allCellInfo } catch (e: Exception) { null } ?: emptyList()
-
         var connectedBandLog = "No active cellular band detected."
 
         for (cell in cells) {
@@ -136,14 +209,12 @@ object NetworkEngine {
                         val match = isReg || simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull" || cellMccMnc.startsWith(simMccMnc.take(5))
                         
                         if (isReg) connectedBandLog = "Connected to 5G $band | PCI: $pciRaw | SINR: $sinrRaw"
-                        bandList.add(CellBandInfo(
-                            "5G-${id?.nrarfcn}", "5G", band, speed, 
+                        bandList.add(CellBandInfo("5G-${id?.nrarfcn}", "5G", band, speed, 
                             if (dbmRaw != CellInfo.UNAVAILABLE) "$dbmRaw" else "N/A",
                             if (rsrqRaw != CellInfo.UNAVAILABLE) "$rsrqRaw" else "N/A",
                             if (sinrRaw != CellInfo.UNAVAILABLE) "$sinrRaw" else "N/A",
                             if (pciRaw != CellInfo.UNAVAILABLE) "$pciRaw" else "N/A",
-                            calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match
-                        ))
+                            calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match))
                     }
                     is CellInfoLte -> {
                         val id = cell.cellIdentity as? CellIdentityLte
@@ -159,14 +230,12 @@ object NetworkEngine {
                         val match = isReg || simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull" || cellMccMnc.startsWith(simMccMnc.take(5))
 
                         if (isReg) connectedBandLog = "Connected to 4G $band | PCI: $pciRaw | SINR: $sinrRaw"
-                        bandList.add(CellBandInfo(
-                            "4G-${id?.earfcn}", "4G", band, speed, 
+                        bandList.add(CellBandInfo("4G-${id?.earfcn}", "4G", band, speed, 
                             if (dbmRaw != CellInfo.UNAVAILABLE) "$dbmRaw" else "N/A",
                             if (rsrqRaw != CellInfo.UNAVAILABLE) "$rsrqRaw" else "N/A",
                             if (sinrRaw != CellInfo.UNAVAILABLE) "$sinrRaw" else "N/A",
                             if (pciRaw != CellInfo.UNAVAILABLE) "$pciRaw" else "N/A",
-                            calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match
-                        ))
+                            calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match))
                     }
                 }
             } catch (e: Exception) {}
@@ -185,8 +254,8 @@ object NetworkEngine {
             tm.registerTelephonyCallback(context.mainExecutor, object : TelephonyCallback(), TelephonyCallback.ServiceStateListener {
                 override fun onServiceStateChanged(serviceState: ServiceState) {
                     when (serviceState.state) {
-                        ServiceState.STATE_OUT_OF_SERVICE -> logEvent("MODEM_WATCHDOG", "Modem dropped to OUT_OF_SERVICE (No signal).")
-                        ServiceState.STATE_EMERGENCY_ONLY -> logEvent("MODEM_WATCHDOG", "Modem dropped to EMERGENCY_ONLY (Tower rejected).")
+                        ServiceState.STATE_OUT_OF_SERVICE -> logEvent("MODEM_WATCHDOG", "Dropped to OUT_OF_SERVICE (No signal).")
+                        ServiceState.STATE_EMERGENCY_ONLY -> logEvent("MODEM_WATCHDOG", "Dropped to EMERGENCY_ONLY (Tower rejected).")
                         ServiceState.STATE_IN_SERVICE -> logEvent("MODEM_WATCHDOG", "Modem IN_SERVICE (Connection Established).")
                     }
                 }
