@@ -183,6 +183,7 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
     val coroutineScope = rememberCoroutineScope()
     val view = LocalView.current
     var bands by remember { mutableStateOf<List<CellBandInfo>>(emptyList()) }
+    var lockedBandId by remember { mutableStateOf<String?>(null) }
     
     var caEnabled by remember { mutableStateOf(true) }
     var volteEnabled by remember { mutableStateOf(true) }
@@ -196,7 +197,6 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
 
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxSize()) {
         
-        // 1-Tap Launcher
         item {
             Button(
                 onClick = { 
@@ -204,9 +204,10 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                     coroutineScope.launch { NetworkEngine.openNativeBandLocker(context) }
                 },
                 modifier = Modifier.fillMaxWidth().height(56.dp),
-                shape = RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
             ) {
-                Text("Open Native Band Locker (Radio Info)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("Open Native Radio Info (Fallback)", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
 
@@ -259,18 +260,40 @@ fun NetworkBandsScreen(context: android.content.Context, hasPermissions: Boolean
                     Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("${band.generation} • ${band.bandName}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                            if (band.isConnected) {
-                                Text("Active Anchor", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            if (band.isAccessible) {
+                                Button(
+                                    onClick = { 
+                                        triggerHaptic()
+                                        if (lockedBandId == band.id) {
+                                            lockedBandId = null
+                                            coroutineScope.launch { 
+                                                NetworkEngine.unlockBands(context) 
+                                                withContext(Dispatchers.Main) { Toast.makeText(context, "Restoring Auto Mode...", Toast.LENGTH_SHORT).show() }
+                                            }
+                                        } else {
+                                            lockedBandId = band.id
+                                            coroutineScope.launch { 
+                                                NetworkEngine.lockBand(context, band.bandName, band.generation) 
+                                                withContext(Dispatchers.Main) { Toast.makeText(context, "Locking to ${band.generation}...", Toast.LENGTH_SHORT).show() }
+                                            }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = if (lockedBandId == band.id) Color(0xFF00C853) else MaterialTheme.colorScheme.primary),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) { 
+                                    Text(if (lockedBandId == band.id) "Unlock" else "Lock", fontSize = 12.sp) 
+                                }
                             }
                         }
                         Text("${band.operatorName} | ${band.speedTier}", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(bottom = 6.dp))
                         
-                        // Advanced NSG Metrics
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("RSRP (Pwr): ${band.signalDbm} dBm", fontSize = 12.sp)
                             Text("SINR (Noise): ${band.sinr} dB", fontSize = 12.sp)
                         }
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.padding(top = 2.dp)) {
+                        // FIX: Removed duplicated modifier that broke compilation
+                        Row(modifier = Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("RSRQ (Qual): ${band.rsrq} dB", fontSize = 12.sp)
                             Text("PCI (Cell ID): ${band.pci}", fontSize = 12.sp, color = Color.Gray)
                         }
