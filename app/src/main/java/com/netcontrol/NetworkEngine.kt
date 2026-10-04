@@ -29,7 +29,6 @@ data class HardwareReport(
 object NetworkEngine {
     var currentLockedBand: String? = null
 
-    // ROBUST ROOT EXECUTOR: Captures actual terminal errors to stop blind guessing
     suspend fun executeRootWithLog(command: String): String = withContext(Dispatchers.IO) {
         try {
             val process = Runtime.getRuntime().exec("su")
@@ -51,7 +50,7 @@ object NetworkEngine {
             } else if (output.isNotEmpty()) {
                 "SUCCESS: $output"
             } else {
-                "Command Sent (No Output)"
+                "OK"
             }
         } catch (e: Exception) {
             "CRASH: ${e.message}"
@@ -62,30 +61,29 @@ object NetworkEngine {
         return executeRootWithLog("setprop $prop $value")
     }
     
+    // The Brute-Force Network Switcher
     suspend fun applyNetworkMode(mode: String): String {
-        val bitmask = when (mode) {
-            "NR_ONLY" -> "524288"
-            "LTE_ONLY" -> "8192"
-            else -> "901119"
-        }
         val legacyMode = when (mode) {
             "NR_ONLY" -> "33"
             "LTE_ONLY" -> "11"
             else -> "26"
         }
 
-        // We run all commands and concatenate the logs
-        val log1 = executeRootWithLog("cmd phone set-allowed-network-types-for-users $bitmask")
-        val log2 = executeRootWithLog("cmd phone set-preferred-network-type $legacyMode")
+        // 1. Update the Global Database (The absolute source of truth)
         executeRootWithLog("settings put global preferred_network_mode $legacyMode")
         executeRootWithLog("settings put global preferred_network_mode1 $legacyMode")
+        executeRootWithLog("settings put global preferred_network_mode2 $legacyMode")
         
-        // Force Radio restart
-        val log3 = executeRootWithLog("cmd phone radio power false")
-        Thread.sleep(1500)
-        val log4 = executeRootWithLog("cmd phone radio power true")
+        // 2. Send the Legacy Command to all possible SIM slots
+        val log1 = executeRootWithLog("cmd phone set-preferred-network-type $legacyMode")
+        val log2 = executeRootWithLog("cmd phone set-preferred-network-type 0 $legacyMode")
+        val log3 = executeRootWithLog("cmd phone set-preferred-network-type 1 $legacyMode")
         
-        return "Log: [$log1] | [$log2] | [$log3] | [$log4]"
+        // 3. THE HAMMER: Kill the Telephony Daemon. 
+        // This forces the phone to restart the cellular radio and read the database we just updated.
+        executeRootWithLog("pkill -f com.android.phone")
+        
+        return "Applied Mode $legacyMode. Logs: [$log1] [$log2] [$log3]"
     }
 
     suspend fun lockBand(bandName: String, generation: String): String {
@@ -157,7 +155,7 @@ object NetworkEngine {
         return bandList.distinctBy { it.bandName }.sortedByDescending { it.isConnected }
     }
 
-    fun startFallbackMonitor(context: Context) {} // Temporarily bypassed to focus on Root logging
+    fun startFallbackMonitor(context: Context) {} 
 
     fun getHardwareReport(context: Context): HardwareReport {
         val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
