@@ -7,23 +7,51 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class NetworkTileService : TileService() {
-    
+    // 0 = Auto, 1 = 5G (NR Only), 2 = 4G (LTE Only)
+    private var currentState = 0 
+
     override fun onStartListening() {
         super.onStartListening()
-        val tile = qsTile ?: return
-        tile.label = "Band Locker"
-        tile.subtitle = "Tap to open"
-        tile.state = Tile.STATE_ACTIVE
-        tile.updateTile()
+        updateTile()
     }
 
     override fun onClick() {
         super.onClick()
-        NetworkEngine.logEvent("QUICK_TILE", "Quick Tile clicked. Launching native RadioInfo.")
+        currentState = (currentState + 1) % 3
+        
+        val targetMode = when (currentState) {
+            1 -> "NR_ONLY"
+            2 -> "LTE_ONLY"
+            else -> "AUTO"
+        }
+        
+        NetworkEngine.logEvent("QUICK_TILE", "Tile Clicked. Routing mode to $targetMode")
         
         CoroutineScope(Dispatchers.IO).launch {
-            // Closes the notification shade and instantly opens the hidden menu
-            NetworkEngine.openNativeBandLocker(applicationContext)
+            NetworkEngine.applyNetworkMode(applicationContext, targetMode)
+            updateTile()
         }
+    }
+
+    private fun updateTile() {
+        val tile = qsTile ?: return
+        when (currentState) {
+            1 -> {
+                tile.label = "5G Only"
+                tile.subtitle = "NR Only"
+                tile.state = Tile.STATE_ACTIVE
+            }
+            2 -> {
+                tile.label = "4G Only"
+                tile.subtitle = "LTE Only"
+                tile.state = Tile.STATE_ACTIVE
+            }
+            else -> {
+                tile.label = "Auto Mode"
+                tile.subtitle = "Default"
+                tile.state = Tile.STATE_INACTIVE
+            }
+        }
+        tile.updateTile()
     }
 }
