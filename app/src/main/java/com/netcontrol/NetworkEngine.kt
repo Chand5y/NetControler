@@ -44,11 +44,11 @@ object NetworkEngine {
 
     suspend fun setProp(prop: String, value: String) = executeRoot("setprop $prop $value")
     
-    // Direct Baseband Command (Immediate effect, identically mimics the 4636 hidden menu)
+    // Direct Baseband Command with forced radio restart
     suspend fun applyNetworkMode(mode: String) = withContext(Dispatchers.IO) {
         val bitmask = when (mode) {
             "NR_ONLY" -> "524288"     // Forces 5G Only
-            "LTE_ONLY" -> "266240"    // Forces 4G LTE Only
+            "LTE_ONLY" -> "8192"      // Forces 4G LTE Only
             else -> "901119"          // Forces Default Auto 
         }
         
@@ -62,9 +62,8 @@ object NetworkEngine {
         executeRoot("cmd phone set-allowed-network-types-for-users $bitmask")
         executeRoot("cmd phone set-preferred-network-type $legacyMode")
         
-        // 2. Brute-force loop through common Subscription IDs (1 to 10) 
-        // to guarantee it hits the active SIM on dual-SIM setups like the POCO F4
-        for (i in 1..10) {
+        // 2. Brute-force loop through common Subscription IDs (1 to 3 is enough for dual SIM)
+        for (i in 1..3) {
             executeRoot("cmd phone set-allowed-network-types-for-users -s $i $bitmask")
             executeRoot("cmd phone set-preferred-network-type -s $i $legacyMode")
         }
@@ -73,6 +72,11 @@ object NetworkEngine {
         executeRoot("settings put global preferred_network_mode $legacyMode")
         executeRoot("settings put global preferred_network_mode1 $legacyMode")
         executeRoot("settings put global preferred_network_mode2 $legacyMode")
+
+        // 4. THE FIX: Force Modem to Restart and Apply Changes immediately
+        executeRoot("cmd phone radio power false")
+        Thread.sleep(1500)
+        executeRoot("cmd phone radio power true")
     }
 
     suspend fun lockBand(bandName: String, generation: String) {
@@ -122,7 +126,8 @@ object NetworkEngine {
                         val speed = if (band == "n78" || band.contains("258")) "Ultra Fast / High Band" else "Stable / Wide Coverage"
                         
                         val cellMccMnc = "${id?.mccString}${id?.mncString}"
-                        val match = simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull"
+                        // Fix for Jio MCC/MNC length mismatch: if it's registered, it's definitely your SIM.
+                        val match = isReg || simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull" || cellMccMnc.startsWith(simMccMnc.take(5))
                         
                         bandList.add(CellBandInfo("5G-${id?.nrarfcn}", "5G", band, speed, dbm, calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match))
                     }
@@ -134,7 +139,7 @@ object NetworkEngine {
                         val speed = if (band == "Band 40" || band == "Band 3") "Balanced Mid-Band" else "Standard Coverage"
 
                         val cellMccMnc = "${id?.mccString}${id?.mncString}"
-                        val match = simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull"
+                        val match = isReg || simMccMnc.isEmpty() || cellMccMnc == simMccMnc || cellMccMnc == "nullnull" || cellMccMnc.startsWith(simMccMnc.take(5))
 
                         bandList.add(CellBandInfo("4G-${id?.earfcn}", "4G", band, speed, dbm, calcBars(dbmRaw), if(match) carrierName else "Other Network", isReg, match))
                     }
