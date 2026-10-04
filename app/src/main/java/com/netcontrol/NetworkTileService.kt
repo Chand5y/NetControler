@@ -1,57 +1,40 @@
 package com.netcontrol
 
+import android.content.Intent
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import java.io.DataOutputStream
 
 class NetworkTileService : TileService() {
-    // 0 = Auto, 1 = 5G (NR Only), 2 = 4G (LTE Only)
-    private var currentState = 0 
-
+    
     override fun onStartListening() {
         super.onStartListening()
-        updateTile()
+        val tile = qsTile ?: return
+        tile.label = "Radio Menu"
+        tile.subtitle = "Band Locker"
+        tile.state = Tile.STATE_ACTIVE
+        tile.updateTile()
     }
 
     override fun onClick() {
         super.onClick()
-        currentState = (currentState + 1) % 3
         
-        val targetMode = when (currentState) {
-            1 -> "NR_ONLY"
-            2 -> "LTE_ONLY"
-            else -> "AUTO"
-        }
-        
-        NetworkEngine.logEvent("QUICK_TILE", "Tile Clicked. Routing mode to $targetMode")
-        
-        CoroutineScope(Dispatchers.IO).launch {
-            NetworkEngine.applyNetworkMode(applicationContext, targetMode)
-            updateTile()
-        }
-    }
+        // 1. Collapse the notification shade immediately
+        val closeIntent = Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+        applicationContext.sendBroadcast(closeIntent)
 
-    private fun updateTile() {
-        val tile = qsTile ?: return
-        when (currentState) {
-            1 -> {
-                tile.label = "5G Only"
-                tile.subtitle = "NR Only"
-                tile.state = Tile.STATE_ACTIVE
+        // 2. Launch the hidden Native Radio Info menu via Root
+        Thread {
+            try {
+                val process = Runtime.getRuntime().exec("su")
+                val os = DataOutputStream(process.outputStream)
+                os.writeBytes("am start -n com.android.phone/.settings.RadioInfo\n")
+                os.writeBytes("exit\n")
+                os.flush()
+                process.waitFor()
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            2 -> {
-                tile.label = "4G Only"
-                tile.subtitle = "LTE Only"
-                tile.state = Tile.STATE_ACTIVE
-            }
-            else -> {
-                tile.label = "Auto Mode"
-                tile.subtitle = "Default"
-                tile.state = Tile.STATE_INACTIVE
-            }
-        }
-        tile.updateTile()
+        }.start()
     }
 }
